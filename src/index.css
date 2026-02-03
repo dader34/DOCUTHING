@@ -217,10 +217,12 @@ a.logo-link:hover {
   background: transparent !important;
 }
 
-a.nav-link {
+.nav-link {
   color: inherit;
+  border: none;
+  background: transparent;
 }
 
-a.nav-link:hover {
+.nav-link:hover {
   background: inherit;
 }
