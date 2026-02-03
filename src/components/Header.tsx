@@ -35,7 +35,7 @@ export default function Header() {
               <Link
                 key={link.href}
                 to={link.href}
-                className={`px-4 py-2 font-bold text-sm tracking-wider no-underline transition-colors ${
+                className={`nav-link px-4 py-2 font-bold text-sm tracking-wider no-underline transition-colors ${
                   location.pathname === link.href
                     ? 'bg-[#ffff00] text-black'
                     : 'text-white hover:bg-white hover:text-black'
@@ -69,7 +69,7 @@ export default function Header() {
                 key={link.href}
                 to={link.href}
                 onClick={() => setIsMenuOpen(false)}
-                className={`block px-4 py-3 font-bold text-sm tracking-wider no-underline ${
+                className={`nav-link block px-4 py-3 font-bold text-sm tracking-wider no-underline ${
                   location.pathname === link.href
                     ? 'bg-[#ffff00] text-black'
                     : 'text-white hover:bg-white hover:text-black'
