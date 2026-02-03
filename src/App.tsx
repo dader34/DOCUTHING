@@ -13,7 +13,7 @@ import AddTextToPDF from './pages/AddTextToPDF';
 
 function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename="/DOCUTHING">
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/merge" element={<MergePDF />} />
