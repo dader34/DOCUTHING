@@ -1,0 +1,218 @@
+@import "tailwindcss";
+
+:root {
+  /* Brutalist color palette */
+  --brutal-black: #000000;
+  --brutal-white: #ffffff;
+  --brutal-yellow: #ffff00;
+  --brutal-red: #ff0000;
+  --brutal-blue: #0000ff;
+  --brutal-gray: #808080;
+  --brutal-light-gray: #e0e0e0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background-color: var(--brutal-white);
+  font-family: 'Courier New', Courier, monospace;
+  color: var(--brutal-black);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Brutalist utility classes */
+.brutal-border {
+  border: 4px solid var(--brutal-black);
+}
+
+.brutal-border-thin {
+  border: 2px solid var(--brutal-black);
+}
+
+.brutal-shadow {
+  box-shadow: 8px 8px 0 var(--brutal-black);
+}
+
+.brutal-shadow-sm {
+  box-shadow: 4px 4px 0 var(--brutal-black);
+}
+
+.brutal-shadow-hover {
+  transition: all 0.1s ease;
+}
+
+.brutal-shadow-hover:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 10px 10px 0 var(--brutal-black);
+}
+
+.brutal-shadow-hover:active {
+  transform: translate(2px, 2px);
+  box-shadow: 4px 4px 0 var(--brutal-black);
+}
+
+.brutal-btn {
+  background: var(--brutal-yellow);
+  color: var(--brutal-black);
+  border: 4px solid var(--brutal-black);
+  padding: 12px 24px;
+  font-family: 'Courier New', Courier, monospace;
+  font-weight: bold;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: 4px 4px 0 var(--brutal-black);
+  transition: all 0.1s ease;
+}
+
+.brutal-btn:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0 var(--brutal-black);
+}
+
+.brutal-btn:active {
+  transform: translate(2px, 2px);
+  box-shadow: 2px 2px 0 var(--brutal-black);
+}
+
+.brutal-btn-primary {
+  background: var(--brutal-black);
+  color: var(--brutal-white);
+}
+
+.brutal-btn-danger {
+  background: var(--brutal-red);
+  color: var(--brutal-white);
+}
+
+.brutal-card {
+  background: var(--brutal-white);
+  border: 4px solid var(--brutal-black);
+  box-shadow: 8px 8px 0 var(--brutal-black);
+}
+
+.brutal-input {
+  border: 3px solid var(--brutal-black);
+  padding: 12px 16px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 16px;
+  background: var(--brutal-white);
+  outline: none;
+}
+
+.brutal-input:focus {
+  box-shadow: 4px 4px 0 var(--brutal-black);
+}
+
+.brutal-dropzone {
+  border: 4px dashed var(--brutal-black);
+  background: repeating-linear-gradient(
+    45deg,
+    var(--brutal-white),
+    var(--brutal-white) 10px,
+    var(--brutal-light-gray) 10px,
+    var(--brutal-light-gray) 20px
+  );
+  transition: all 0.2s ease;
+}
+
+.brutal-dropzone:hover,
+.brutal-dropzone.active {
+  background: var(--brutal-yellow);
+  border-style: solid;
+}
+
+.brutal-tag {
+  display: inline-block;
+  background: var(--brutal-black);
+  color: var(--brutal-white);
+  padding: 4px 12px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 12px;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+
+.brutal-header {
+  background: var(--brutal-black);
+  color: var(--brutal-white);
+  border-bottom: 4px solid var(--brutal-black);
+}
+
+.brutal-footer {
+  background: var(--brutal-black);
+  color: var(--brutal-white);
+  border-top: 4px solid var(--brutal-black);
+}
+
+.brutal-thumbnail {
+  border: 3px solid var(--brutal-black);
+  background: var(--brutal-white);
+  transition: all 0.1s ease;
+}
+
+.brutal-thumbnail:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 4px 4px 0 var(--brutal-black);
+}
+
+.brutal-thumbnail.selected {
+  background: var(--brutal-yellow);
+  box-shadow: 6px 6px 0 var(--brutal-black);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--brutal-light-gray);
+  border: 2px solid var(--brutal-black);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--brutal-black);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--brutal-gray);
+}
+
+/* Typography */
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Courier New', Courier, monospace;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+/* Selection */
+::selection {
+  background: var(--brutal-yellow);
+  color: var(--brutal-black);
+}
+
+/* Links */
+a {
+  color: var(--brutal-black);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  text-decoration-thickness: 2px;
+}
+
+a:hover {
+  background: var(--brutal-yellow);
+}
+
+a.logo-link,
+a.logo-link:hover {
+  background: transparent !important;
+}
