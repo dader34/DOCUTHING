@@ -297,6 +297,47 @@ export async function addTextToPDF(
   return pdf.save();
 }
 
+export interface PageInfo {
+  width: number;
+  height: number;
+  // The offset needed to convert from visual coordinates to PDF coordinates
+  offsetX: number;
+  offsetY: number;
+}
+
+/**
+ * Gets the dimensions and offsets of all pages in a PDF using pdf-lib
+ * pdf-lib's page.getSize() returns the size based on MediaBox (or CropBox if present)
+ * pdf.js renders based on the effective page view
+ * We need to account for any difference
+ */
+export async function getPdfPageInfo(file: File): Promise<PageInfo[]> {
+  const arrayBuffer = await fileToArrayBuffer(file);
+  const pdf = await PDFDocument.load(arrayBuffer);
+  const pageCount = pdf.getPageCount();
+
+  const pageInfos: PageInfo[] = [];
+  for (let i = 0; i < pageCount; i++) {
+    const page = pdf.getPage(i);
+    const { width, height } = page.getSize();
+
+    // Check for CropBox - if it exists and differs from MediaBox,
+    // we need to offset coordinates
+    const mediaBox = page.getMediaBox();
+    const cropBox = page.getCropBox();
+
+    // The offset is the difference between MediaBox origin and CropBox origin
+    // pdf.js renders the CropBox area, but pdf-lib coordinates are relative to MediaBox
+    const offsetX = cropBox.x - mediaBox.x;
+    const offsetY = cropBox.y - mediaBox.y;
+
+
+    pageInfos.push({ width, height, offsetX, offsetY });
+  }
+
+  return pageInfos;
+}
+
 /**
  * Gets the total number of pages in a PDF
  * @param file - The PDF file

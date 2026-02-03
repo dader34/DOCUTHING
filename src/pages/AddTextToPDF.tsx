@@ -5,8 +5,8 @@ import Footer from '../components/Footer';
 import FileDropzone from '../components/FileDropzone';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { Button, Alert, Card, CardBody } from '@dader34/stylekit-ui';
-import { addTextToPDF, type AddTextOptions } from '../utils/pdfUtils';
-import { pdfToImagesWithDimensions, extractPdfTextContent, type PageDimensions, type PageTextContent } from '../utils/imageUtils';
+import { addTextToPDF, getPdfPageInfo, type AddTextOptions, type PageInfo } from '../utils/pdfUtils';
+import { pdfToImagesWithDimensions } from '../utils/imageUtils';
 import { downloadFile } from '../utils/fileUtils';
 import {
   Type,
@@ -27,16 +27,18 @@ import {
   Redo2,
 } from 'lucide-react';
 
+// Annotation positions and sizes are stored in PDF points (1 point = 1/72 inch)
+// This ensures 1:1 correspondence with the output PDF
 interface TextAnnotation {
   id: string;
   text: string;
-  x: number; // percentage (0-100)
-  y: number; // percentage (0-100)
+  x: number; // PDF points from left
+  y: number; // PDF points from top (screen coordinates, not PDF coordinates)
   page: number;
-  fontSize: number;
+  fontSize: number; // PDF points
   color: string;
-  width: number; // percentage
-  height: number; // percentage
+  width: number; // PDF points
+  height: number; // PDF points
 }
 
 type Tool = 'select' | 'text';
@@ -51,20 +53,21 @@ const COLORS = [
   { name: 'Orange', value: '#f97316' },
 ];
 
-const FONT_SIZES = [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 64, 72];
+const FONT_SIZES = [6, 8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 64, 72];
 
 const ZOOM_LEVELS = [25, 50, 75, 100, 125, 150, 200, 300];
 
 const MAX_HISTORY = 50;
 
-// Snapping configuration
-const SNAP_THRESHOLD = 1; // percentage threshold for snapping
+// Snapping configuration (in PDF points)
+const SNAP_THRESHOLD = 5;
 
 const STORAGE_KEY = 'addTextToPDF_session';
 
+
 interface SavedSession {
   fileName: string;
-  fileData: string; // base64 encoded PDF
+  fileData: string;
   annotations: TextAnnotation[];
   currentPage: number;
   fontSize: number;
@@ -74,17 +77,17 @@ interface SavedSession {
 
 interface SnapGuide {
   type: 'vertical' | 'horizontal';
-  position: number; // percentage
+  position: number; // PDF points
 }
 
 export default function AddTextToPDF() {
   const [file, setFile] = useState<File | null>(null);
   const [pages, setPages] = useState<string[]>([]);
-  const [pageDimensions, setPageDimensions] = useState<PageDimensions[]>([]);
+  const [pageInfos, setPageInfos] = useState<PageInfo[]>([]);
   const [currentPage, setCurrentPage] = useState(0);
   const [annotations, setAnnotations] = useState<TextAnnotation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [isEditing, setIsEditing] = useState(false); // Whether text editing mode is active
+  const [isEditing, setIsEditing] = useState(false);
   const [activeTool, setActiveTool] = useState<Tool>('text');
   const [fontSize, setFontSize] = useState(16);
   const [color, setColor] = useState('#000000');
@@ -93,11 +96,9 @@ export default function AddTextToPDF() {
   const [error, setError] = useState<string | null>(null);
   const [zoom, setZoom] = useState(100);
 
-  // Undo/Redo history
   const [history, setHistory] = useState<TextAnnotation[][]>([[]]);
   const [historyIndex, setHistoryIndex] = useState(0);
 
-  // Drag state
   const [isDragging, setIsDragging] = useState(false);
   const [resizeCorner, setResizeCorner] = useState<ResizeCorner>(null);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -105,7 +106,6 @@ export default function AddTextToPDF() {
   const [showFontDropdown, setShowFontDropdown] = useState(false);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [clipboard, setClipboard] = useState<TextAnnotation | null>(null);
-  const [pdfTextContent, setPdfTextContent] = useState<PageTextContent[]>([]);
 
   const pageRef = useRef<HTMLDivElement>(null);
   const editingRef = useRef<HTMLTextAreaElement>(null);
@@ -116,7 +116,16 @@ export default function AddTextToPDF() {
 
   const fileName = file?.name || 'document.pdf';
 
-  // Get snap points from other annotations on the current page
+  // Get current page info in PDF points
+  const currentPageInfo = pageInfos[currentPage] || { width: 595.276, height: 841.890, offsetX: 0, offsetY: 0 };
+  const currentDims = { width: currentPageInfo.width, height: currentPageInfo.height };
+
+  // The effective scale for display
+  // At 100% zoom, we want the page to display at a reasonable size
+  // The image is 2x PDF dimensions, so we scale it down and apply zoom
+  const effectiveScale = zoom / 100;
+
+  // Get snap points from other annotations on the current page (in PDF points)
   const getSnapPoints = useCallback((excludeId: string) => {
     const otherAnnotations = annotations.filter(
       (a) => a.id !== excludeId && a.page === currentPage + 1
@@ -126,21 +135,19 @@ export default function AddTextToPDF() {
     const verticalPoints: number[] = [];
 
     // Add page center and edges
-    verticalPoints.push(0, 50, 100);
-    horizontalPoints.push(0, 50, 100);
+    verticalPoints.push(0, currentDims.width / 2, currentDims.width);
+    horizontalPoints.push(0, currentDims.height / 2, currentDims.height);
 
     // Add points from other annotations
     otherAnnotations.forEach((ann) => {
-      // Left edge, center, right edge
       verticalPoints.push(ann.x, ann.x + ann.width / 2, ann.x + ann.width);
-      // Top edge, center, bottom edge
       horizontalPoints.push(ann.y, ann.y + ann.height / 2, ann.y + ann.height);
     });
 
     return { horizontalPoints, verticalPoints };
-  }, [annotations, currentPage]);
+  }, [annotations, currentPage, currentDims]);
 
-  // Apply snapping to a position
+  // Apply snapping to a position (all in PDF points)
   const applySnapping = useCallback((
     x: number,
     y: number,
@@ -154,7 +161,6 @@ export default function AddTextToPDF() {
     let snappedX = x;
     let snappedY = y;
 
-    // Check vertical snapping (left edge, center, right edge of dragged box)
     const xPoints = [x, x + width / 2, x + width];
     for (const xPoint of xPoints) {
       for (const snapPoint of verticalPoints) {
@@ -166,7 +172,6 @@ export default function AddTextToPDF() {
       }
     }
 
-    // Check horizontal snapping (top edge, center, bottom edge of dragged box)
     const yPoints = [y, y + height / 2, y + height];
     for (const yPoint of yPoints) {
       for (const snapPoint of horizontalPoints) {
@@ -181,16 +186,12 @@ export default function AddTextToPDF() {
     return { x: snappedX, y: snappedY, guides };
   }, [getSnapPoints]);
 
-  // Push state to history
   const pushToHistory = useCallback((newAnnotations: TextAnnotation[]) => {
     if (isUndoingRef.current) return;
 
     setHistory((prev) => {
-      // Remove any future states if we're not at the end
       const newHistory = prev.slice(0, historyIndex + 1);
-      // Add new state
       newHistory.push(newAnnotations);
-      // Limit history size
       if (newHistory.length > MAX_HISTORY) {
         newHistory.shift();
         return newHistory;
@@ -225,7 +226,6 @@ export default function AddTextToPDF() {
   const canUndo = historyIndex > 0;
   const canRedo = historyIndex < history.length - 1;
 
-  // Focus textarea when entering edit mode
   useEffect(() => {
     if (selectedId && isEditing && editingRef.current) {
       editingRef.current.focus();
@@ -244,7 +244,6 @@ export default function AddTextToPDF() {
       const session: SavedSession = JSON.parse(savedData);
       isRestoringSession.current = true;
 
-      // Convert base64 back to File
       const byteCharacters = atob(session.fileData);
       const byteNumbers = new Array(byteCharacters.length);
       for (let i = 0; i < byteCharacters.length; i++) {
@@ -263,16 +262,14 @@ export default function AddTextToPDF() {
       setHistoryIndex(0);
       setIsLoading(true);
 
-      // Load the PDF pages and text content
-      pdfToImagesWithDimensions(restoredFile)
-        .then(async (result) => {
+      Promise.all([
+        pdfToImagesWithDimensions(restoredFile),
+        getPdfPageInfo(restoredFile)
+      ])
+        .then(async ([result, pdfLibInfo]) => {
           setPages(result.images);
-          setPageDimensions(result.pageDimensions);
+          setPageInfos(pdfLibInfo);
           setIsLoading(false);
-
-          // Extract embedded text (only works for text-based PDFs, not scanned)
-          const textContent = await extractPdfTextContent(restoredFile);
-          setPdfTextContent(textContent);
         })
         .catch((err) => {
           setError(err instanceof Error ? err.message : 'Failed to restore PDF');
@@ -321,13 +318,15 @@ export default function AddTextToPDF() {
     saveSession();
   }, [file, annotations, currentPage, fontSize, color, zoom, isLoading]);
 
-  // Clear session when file is removed
   const clearSession = useCallback(() => {
     localStorage.removeItem(STORAGE_KEY);
   }, []);
 
   const handleFileSelected = useCallback(async (files: File[]) => {
     if (files.length === 0) return;
+
+    // Clear any saved session
+    localStorage.removeItem(STORAGE_KEY);
 
     const selectedFile = files[0];
     setFile(selectedFile);
@@ -340,15 +339,19 @@ export default function AddTextToPDF() {
     setHistoryIndex(0);
 
     try {
-      // First load the page images
-      const result = await pdfToImagesWithDimensions(selectedFile);
-      setPages(result.images);
-      setPageDimensions(result.pageDimensions);
-      setIsLoading(false);
+      // Get page info from pdf-lib (what we'll use for saving)
+      const pdfLibInfo = await getPdfPageInfo(selectedFile);
 
-      // Extract embedded text (only works for text-based PDFs, not scanned)
-      const textContent = await extractPdfTextContent(selectedFile);
-      setPdfTextContent(textContent);
+      // Get images from pdf.js
+      const result = await pdfToImagesWithDimensions(selectedFile);
+
+      // Dimensions match - good
+
+      setPages(result.images);
+
+      // Use pdf-lib info for consistency with output
+      setPageInfos(pdfLibInfo);
+      setIsLoading(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load PDF');
       setFile(null);
@@ -357,22 +360,41 @@ export default function AddTextToPDF() {
     }
   }, []);
 
-  const getRelativePosition = (e: React.MouseEvent | MouseEvent) => {
+  // Convert screen coordinates to PDF points
+  const getPositionInPoints = (e: React.MouseEvent | MouseEvent) => {
     if (!pageRef.current) return { x: 0, y: 0 };
     const rect = pageRef.current.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * 100;
-    const y = ((e.clientY - rect.top) / rect.height) * 100;
-    return { x: Math.max(0, Math.min(100, x)), y: Math.max(0, Math.min(100, y)) };
+
+    // getBoundingClientRect returns the transformed size (after CSS scale)
+    // We need to convert screen pixels to PDF points
+    // The rect includes the border (4px), but the border is also scaled
+    const borderWidth = 4 * effectiveScale;
+
+    // Calculate position relative to content area (excluding border)
+    const contentX = e.clientX - rect.left - borderWidth;
+    const contentY = e.clientY - rect.top - borderWidth;
+
+    // Convert from screen pixels to PDF points
+    // rect.width includes border, so content width = rect.width - 2*borderWidth
+    const contentWidth = rect.width - 2 * borderWidth;
+    const contentHeight = rect.height - 2 * borderWidth;
+
+    const x = (contentX / contentWidth) * currentDims.width;
+    const y = (contentY / contentHeight) * currentDims.height;
+
+    return {
+      x: Math.max(0, Math.min(currentDims.width, x)),
+      y: Math.max(0, Math.min(currentDims.height, y))
+    };
   };
 
   const handlePageClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    // Don't create new text if clicking on an existing annotation
     if ((e.target as HTMLElement).closest('.text-annotation')) {
       return;
     }
 
     if (activeTool === 'text') {
-      const { x, y } = getRelativePosition(e);
+      const { x, y } = getPositionInPoints(e);
 
       const newAnnotation: TextAnnotation = {
         id: `${Date.now()}-${Math.random()}`,
@@ -382,18 +404,17 @@ export default function AddTextToPDF() {
         page: currentPage + 1,
         fontSize,
         color,
-        width: 20,
-        height: 8,
+        width: 120, // Default width in PDF points
+        height: fontSize * 2, // Default height based on font size
       };
 
       const newAnnotations = [...annotations, newAnnotation];
       setAnnotations(newAnnotations);
       pushToHistory(newAnnotations);
       setSelectedId(newAnnotation.id);
-      setIsEditing(true); // Enter edit mode immediately for new text boxes
+      setIsEditing(true);
       setActiveTool('select');
     } else {
-      // Clicking on empty space deselects
       handleDeselect();
     }
   };
@@ -401,7 +422,6 @@ export default function AddTextToPDF() {
   const handleAnnotationClick = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     if (selectedId !== id) {
-      // First click selects the box (not editing mode)
       setSelectedId(id);
       setIsEditing(false);
       setActiveTool('select');
@@ -423,11 +443,10 @@ export default function AddTextToPDF() {
       return;
     }
 
-    // Start dragging
     const annotation = annotations.find((a) => a.id === id);
     if (!annotation || !pageRef.current) return;
 
-    const { x, y } = getRelativePosition(e);
+    const { x, y } = getPositionInPoints(e);
     setDragOffset({ x: x - annotation.x, y: y - annotation.y });
     setIsDragging(true);
   };
@@ -437,7 +456,7 @@ export default function AddTextToPDF() {
     const annotation = annotations.find((a) => a.id === selectedId);
     if (!annotation) return;
 
-    const { x, y } = getRelativePosition(e);
+    const { x, y } = getPositionInPoints(e);
     setResizeStart({
       x,
       y,
@@ -449,7 +468,6 @@ export default function AddTextToPDF() {
     setResizeCorner(corner);
   };
 
-  // Close font dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (fontDropdownRef.current && !fontDropdownRef.current.contains(e.target as Node)) {
@@ -465,14 +483,13 @@ export default function AddTextToPDF() {
       if (!selectedId) return;
 
       if (isDragging) {
-        const { x, y } = getRelativePosition(e);
+        const { x, y } = getPositionInPoints(e);
         const ann = annotations.find((a) => a.id === selectedId);
         if (!ann) return;
 
-        const rawX = Math.max(0, Math.min(95, x - dragOffset.x));
-        const rawY = Math.max(0, Math.min(95, y - dragOffset.y));
+        const rawX = Math.max(0, Math.min(currentDims.width - ann.width, x - dragOffset.x));
+        const rawY = Math.max(0, Math.min(currentDims.height - ann.height, y - dragOffset.y));
 
-        // Apply snapping
         const { x: snappedX, y: snappedY, guides } = applySnapping(
           rawX,
           rawY,
@@ -492,7 +509,7 @@ export default function AddTextToPDF() {
       }
 
       if (resizeCorner) {
-        const { x, y } = getRelativePosition(e);
+        const { x, y } = getPositionInPoints(e);
         const dx = x - resizeStart.x;
         const dy = y - resizeStart.y;
 
@@ -505,45 +522,37 @@ export default function AddTextToPDF() {
             let newWidth = resizeStart.width;
             let newHeight = resizeStart.height;
 
-            // Handle each corner (minimum width 2%, minimum height 1%)
-            const minWidth = 2;
-            const minHeight = 1;
+            const minWidth = 20;
+            const minHeight = 10;
 
             if (resizeCorner === 'se') {
-              // Southeast: expand right and down
               newWidth = Math.max(minWidth, resizeStart.width + dx);
               newHeight = Math.max(minHeight, resizeStart.height + dy);
             } else if (resizeCorner === 'sw') {
-              // Southwest: move left edge, expand down
               const widthDelta = -dx;
               newX = resizeStart.annX + dx;
               newWidth = Math.max(minWidth, resizeStart.width + widthDelta);
               newHeight = Math.max(minHeight, resizeStart.height + dy);
-              // Prevent negative position
               if (newX < 0) {
                 newWidth = newWidth + newX;
                 newX = 0;
               }
             } else if (resizeCorner === 'ne') {
-              // Northeast: expand right, move top edge
               const heightDelta = -dy;
               newY = resizeStart.annY + dy;
               newWidth = Math.max(minWidth, resizeStart.width + dx);
               newHeight = Math.max(minHeight, resizeStart.height + heightDelta);
-              // Prevent negative position
               if (newY < 0) {
                 newHeight = newHeight + newY;
                 newY = 0;
               }
             } else if (resizeCorner === 'nw') {
-              // Northwest: move both left and top edges
               const widthDelta = -dx;
               const heightDelta = -dy;
               newX = resizeStart.annX + dx;
               newY = resizeStart.annY + dy;
               newWidth = Math.max(minWidth, resizeStart.width + widthDelta);
               newHeight = Math.max(minHeight, resizeStart.height + heightDelta);
-              // Prevent negative positions
               if (newX < 0) {
                 newWidth = newWidth + newX;
                 newX = 0;
@@ -575,13 +584,12 @@ export default function AddTextToPDF() {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isDragging, resizeCorner, selectedId, dragOffset, resizeStart, annotations, applySnapping]);
+  }, [isDragging, resizeCorner, selectedId, dragOffset, resizeStart, annotations, applySnapping, currentDims, effectiveScale]);
 
   const updateAnnotationText = (id: string, text: string) => {
     setAnnotations((prev) =>
       prev.map((ann) => (ann.id === id ? { ...ann, text } : ann))
     );
-    // Don't push to history on every keystroke - will be pushed on blur/deselect
   };
 
   const updateAnnotationStyle = (id: string, updates: Partial<TextAnnotation>) => {
@@ -591,7 +599,6 @@ export default function AddTextToPDF() {
     setAnnotations(newAnnotations);
     pushToHistory(newAnnotations);
 
-    // Remember the last used font size and color for new text boxes
     if (updates.fontSize !== undefined) {
       setFontSize(updates.fontSize);
     }
@@ -607,7 +614,6 @@ export default function AddTextToPDF() {
     if (selectedId === id) setSelectedId(null);
   };
 
-  // Push to history when deselecting (captures text changes)
   const handleDeselect = () => {
     if (selectedId) {
       pushToHistory(annotations);
@@ -634,28 +640,22 @@ export default function AddTextToPDF() {
       let pdfData = file;
 
       for (const annotation of nonEmptyAnnotations) {
-        // Get actual page dimensions (0-indexed)
         const pageIndex = annotation.page - 1;
-        const dims = pageDimensions[pageIndex] || { width: 595.276, height: 841.890 };
+        const info = pageInfos[pageIndex] || { width: 595.276, height: 841.890, offsetX: 0, offsetY: 0 };
 
-        // Convert percentage to PDF points using actual page dimensions
-        const pdfX = (annotation.x / 100) * dims.width;
+        // Annotation coordinates are already in PDF points
+        // Add MediaBox offset and flip Y coordinate for PDF (origin at bottom-left)
+        // PDF drawText positions at baseline, which is roughly 0.2 * fontSize below the top
+        const pdfX = annotation.x + info.offsetX;
+        const baselineOffset = annotation.fontSize * 0.8; // Approximate ascender height
+        const pdfY = info.height - annotation.y - baselineOffset + info.offsetY;
 
-        // PDF coordinate system has origin at bottom-left, so flip Y
-        // The annotation.y is the TOP of the text box in screen coords
-        // PDF drawText positions at the baseline (bottom of text)
-        // Editor shows fontSize in CSS pixels on a 2x scaled image
-        // The preview image is 2x scale, so we need to compensate
-        const pdfFontSize = annotation.fontSize * 1.4;
-        const screenY = (annotation.y / 100) * dims.height;
-        // Subtract extra offset to account for text baseline positioning
-        const pdfY = dims.height - screenY - pdfFontSize;
 
         const options: AddTextOptions = {
           page: annotation.page,
           x: pdfX,
           y: pdfY,
-          fontSize: pdfFontSize,
+          fontSize: annotation.fontSize,
           color: annotation.color,
         };
 
@@ -675,7 +675,7 @@ export default function AddTextToPDF() {
   const resetFile = () => {
     setFile(null);
     setPages([]);
-    setPageDimensions([]);
+    setPageInfos([]);
     setAnnotations([]);
     setCurrentPage(0);
     setSelectedId(null);
@@ -706,7 +706,6 @@ export default function AddTextToPDF() {
     setZoom(100);
   };
 
-  // Copy the selected annotation to clipboard
   const copyAnnotation = useCallback(() => {
     if (!selectedId) return;
     const annotation = annotations.find((a) => a.id === selectedId);
@@ -715,18 +714,17 @@ export default function AddTextToPDF() {
     }
   }, [selectedId, annotations]);
 
-  // Paste the annotation from clipboard
   const pasteAnnotation = useCallback(() => {
     if (!clipboard) return;
 
-    const OFFSET = 2; // percentage offset for pasted item
+    const OFFSET = 10; // PDF points offset
 
     const newAnnotation: TextAnnotation = {
       ...clipboard,
       id: `${Date.now()}-${Math.random()}`,
-      x: Math.min(clipboard.x + OFFSET, 100 - clipboard.width),
-      y: Math.min(clipboard.y + OFFSET, 100 - clipboard.height),
-      page: currentPage + 1, // Paste on current page
+      x: Math.min(clipboard.x + OFFSET, currentDims.width - clipboard.width),
+      y: Math.min(clipboard.y + OFFSET, currentDims.height - clipboard.height),
+      page: currentPage + 1,
     };
 
     const newAnnotations = [...annotations, newAnnotation];
@@ -734,30 +732,26 @@ export default function AddTextToPDF() {
     pushToHistory(newAnnotations);
     setSelectedId(newAnnotation.id);
     setActiveTool('select');
-  }, [clipboard, annotations, currentPage, pushToHistory]);
+  }, [clipboard, annotations, currentPage, pushToHistory, currentDims]);
 
   const currentPageAnnotations = annotations.filter(
     (ann) => ann.page === currentPage + 1
   );
 
-  // Handle keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const isEditingText = document.activeElement?.tagName === 'TEXTAREA';
 
-      // Undo: Ctrl/Cmd + Z
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
         e.preventDefault();
         undo();
         return;
       }
-      // Redo: Ctrl/Cmd + Shift + Z or Ctrl/Cmd + Y
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
         e.preventDefault();
         redo();
         return;
       }
-      // Copy: Ctrl/Cmd + C (only when not editing text)
       if ((e.ctrlKey || e.metaKey) && e.key === 'c' && !isEditingText) {
         if (selectedId) {
           e.preventDefault();
@@ -765,7 +759,6 @@ export default function AddTextToPDF() {
         }
         return;
       }
-      // Paste: Ctrl/Cmd + V (only when not editing text)
       if ((e.ctrlKey || e.metaKey) && e.key === 'v' && !isEditingText) {
         e.preventDefault();
         e.stopPropagation();
@@ -775,7 +768,6 @@ export default function AddTextToPDF() {
         return;
       }
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        // Only delete if not editing text
         if (selectedId && !isEditingText) {
           removeAnnotation(selectedId);
         }
@@ -787,7 +779,18 @@ export default function AddTextToPDF() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedId, undo, redo, copyAnnotation, pasteAnnotation]);
+  }, [selectedId, undo, redo, copyAnnotation, pasteAnnotation, clipboard]);
+
+  // Convert PDF points to percentage of page dimensions for positioning
+  // This ensures annotations stay aligned with the image content
+  const toPercentX = (points: number) => (points / currentDims.width) * 100;
+  const toPercentY = (points: number) => (points / currentDims.height) * 100;
+  const toPercentW = (points: number) => (points / currentDims.width) * 100;
+  const toPercentH = (points: number) => (points / currentDims.height) * 100;
+
+  // For font size, we need to scale relative to container height
+  // so text appears the same relative size regardless of page dimensions
+  const toFontSizePx = (points: number) => points;
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -795,7 +798,6 @@ export default function AddTextToPDF() {
 
       <main className="flex-1 pt-20 pb-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          {/* Back Link */}
           <Link
             to="/"
             className="inline-flex items-center gap-2 font-bold uppercase tracking-wider text-sm mb-8 no-underline hover:opacity-70"
@@ -804,7 +806,6 @@ export default function AddTextToPDF() {
             BACK TO HOME
           </Link>
 
-          {/* Page Header */}
           <div className="mb-8">
             <div className="flex items-center gap-6 mb-4">
               <div className="w-16 h-16 bg-orange-500 border-4 border-current flex items-center justify-center">
@@ -836,15 +837,12 @@ export default function AddTextToPDF() {
                 <LoadingSpinner message="LOADING PDF..." />
               ) : (
                 <div className="space-y-4">
-                  {/* Main Editor Area */}
                   <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-                    {/* PDF Preview */}
                     <div className="lg:col-span-3 order-2 lg:order-1">
                       <Card variant="outlined">
                         <CardBody className="p-0">
-                          {/* Toolbar - above editor */}
+                          {/* Toolbar */}
                           <div className="flex flex-wrap items-center gap-3 p-3 border-b-4 border-current">
-                            {/* Tool Selection */}
                             <div className="flex border-4 border-current">
                               <button
                                 onClick={() => setActiveTool('select')}
@@ -872,7 +870,6 @@ export default function AddTextToPDF() {
                               </button>
                             </div>
 
-                            {/* Undo/Redo */}
                             <div className="flex border-4 border-current">
                               <button
                                 onClick={undo}
@@ -894,7 +891,6 @@ export default function AddTextToPDF() {
 
                             <div className="flex-1" />
 
-                            {/* Delete selected */}
                             {selectedId && (
                               <button
                                 onClick={() => removeAnnotation(selectedId)}
@@ -905,7 +901,6 @@ export default function AddTextToPDF() {
                               </button>
                             )}
 
-                            {/* File info & close */}
                             <div className="flex items-center gap-2 pl-2 border-l-4 border-current border-opacity-20">
                               <FileText className="w-4 h-4 opacity-50" />
                               <span className="font-mono text-xs opacity-70 max-w-[100px] truncate">
@@ -923,7 +918,6 @@ export default function AddTextToPDF() {
 
                           {/* Page Navigation & Zoom */}
                           <div className="flex items-center justify-between p-3 border-b-4 border-current gap-4">
-                            {/* Page controls */}
                             <div className="flex items-center gap-2">
                               <Button
                                 onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
@@ -946,7 +940,6 @@ export default function AddTextToPDF() {
                               </Button>
                             </div>
 
-                            {/* Zoom controls */}
                             <div className="flex items-center gap-1 border-4 border-current">
                               <button
                                 onClick={zoomOut}
@@ -986,51 +979,28 @@ export default function AddTextToPDF() {
                             <div
                               ref={pageRef}
                               onClick={handlePageClick}
-                              className={`relative bg-white border-4 border-black shadow-[6px_6px_0_0_#000] select-none origin-top ${
+                              className={`relative bg-white border-4 border-black shadow-[6px_6px_0_0_#000] select-none origin-top-left ${
                                 activeTool === 'text' ? 'cursor-crosshair' : 'cursor-default'
                               }`}
                               style={{
-                                transform: `scale(${zoom / 100})`,
-                                transformOrigin: 'top center',
+                                // Container is sized to PDF dimensions (in points)
+                                // CSS transform handles both the 2x image scaling and user zoom
+                                width: currentDims.width,
+                                height: currentDims.height,
+                                transform: `scale(${effectiveScale})`,
+                                transformOrigin: 'top left',
                               }}
                             >
                               <img
                                 src={pages[currentPage]}
                                 alt={`Page ${currentPage + 1}`}
-                                className="w-auto"
-                                style={{ maxHeight: '70vh' }}
+                                style={{
+                                  // Image is 2x size, so scale it to fit the container
+                                  width: currentDims.width,
+                                  height: currentDims.height,
+                                }}
                                 draggable={false}
                               />
-
-                              {/* PDF Text Layer - allows selecting/copying original text */}
-                              {pdfTextContent[currentPage] && pdfTextContent[currentPage].items.length > 0 && (
-                                <div
-                                  className="absolute inset-0 overflow-hidden"
-                                  style={{
-                                    zIndex: selectedId ? 1 : 15,
-                                    pointerEvents: selectedId ? 'none' : 'auto',
-                                  }}
-                                >
-                                  {pdfTextContent[currentPage].items.map((item, index) => (
-                                    <span
-                                      key={`text-${index}`}
-                                      className="absolute cursor-text"
-                                      style={{
-                                        left: `${item.x}%`,
-                                        top: `${item.y}%`,
-                                        fontSize: `${item.fontSize}px`,
-                                        lineHeight: 1.2,
-                                        color: 'transparent',
-                                        whiteSpace: 'pre-wrap',
-                                        userSelect: 'text',
-                                        WebkitUserSelect: 'text',
-                                      }}
-                                    >
-                                      {item.text}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
 
                               {/* Snap guide lines */}
                               {snapGuides.map((guide, index) => (
@@ -1040,14 +1010,14 @@ export default function AddTextToPDF() {
                                   style={
                                     guide.type === 'vertical'
                                       ? {
-                                          left: `${guide.position}%`,
+                                          left: `${toPercentX(guide.position)}%`,
                                           top: 0,
                                           bottom: 0,
                                           width: '1px',
                                           backgroundColor: '#f97316',
                                         }
                                       : {
-                                          top: `${guide.position}%`,
+                                          top: `${toPercentY(guide.position)}%`,
                                           left: 0,
                                           right: 0,
                                           height: '1px',
@@ -1065,19 +1035,18 @@ export default function AddTextToPDF() {
                                     selectedId === ann.id ? 'z-20' : 'z-10'
                                   }`}
                                   style={{
-                                    left: `${ann.x}%`,
-                                    top: `${ann.y}%`,
-                                    width: `${ann.width}%`,
-                                    height: selectedId === ann.id ? `${ann.height}%` : 'auto',
-                                    minWidth: '60px',
-                                    minHeight: '24px',
+                                    left: `${toPercentX(ann.x)}%`,
+                                    top: `${toPercentY(ann.y)}%`,
+                                    width: `${toPercentW(ann.width)}%`,
+                                    height: selectedId === ann.id ? `${toPercentH(ann.height)}%` : 'auto',
+                                    minWidth: `${toPercentW(40)}%`,
+                                    minHeight: toFontSizePx(ann.fontSize),
                                   }}
                                   onClick={(e) => handleAnnotationClick(e, ann.id)}
                                   onDoubleClick={(e) => handleAnnotationDoubleClick(e, ann.id)}
                                   onMouseDown={(e) => handleAnnotationMouseDown(e, ann.id)}
                                 >
                                   {selectedId === ann.id ? (
-                                    // Selected mode - use outline instead of border to avoid shifting content
                                     <div
                                       className="relative w-full h-full"
                                       style={{
@@ -1092,7 +1061,6 @@ export default function AddTextToPDF() {
                                         onClick={(e) => e.stopPropagation()}
                                         onMouseDown={(e) => e.stopPropagation()}
                                       >
-                                        {/* Move handle */}
                                         <div
                                           className="px-2 py-1 cursor-move flex items-center gap-1 hover:bg-blue-600"
                                           onMouseDown={(e) => {
@@ -1103,7 +1071,6 @@ export default function AddTextToPDF() {
                                           <Move className="w-3 h-3" />
                                         </div>
 
-                                        {/* Font size dropdown */}
                                         <div className="relative" ref={fontDropdownRef}>
                                           <button
                                             className="px-2 py-1 hover:bg-blue-600 flex items-center gap-1"
@@ -1112,7 +1079,7 @@ export default function AddTextToPDF() {
                                               setShowFontDropdown(!showFontDropdown);
                                             }}
                                           >
-                                            {ann.fontSize}px
+                                            {ann.fontSize}pt
                                             <svg className="w-2 h-2" fill="currentColor" viewBox="0 0 20 20">
                                               <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
                                             </svg>
@@ -1131,14 +1098,13 @@ export default function AddTextToPDF() {
                                                     setShowFontDropdown(false);
                                                   }}
                                                 >
-                                                  {size}px
+                                                  {size}pt
                                                 </button>
                                               ))}
                                             </div>
                                           )}
                                         </div>
 
-                                        {/* Color swatches */}
                                         <div className="flex items-center px-1 gap-0.5">
                                           {COLORS.map((c) => (
                                             <button
@@ -1156,7 +1122,6 @@ export default function AddTextToPDF() {
                                           ))}
                                         </div>
 
-                                        {/* Delete button */}
                                         <button
                                           className="px-2 py-1 bg-red-500 hover:bg-red-600"
                                           onClick={(e) => {
@@ -1169,7 +1134,6 @@ export default function AddTextToPDF() {
                                       </div>
 
                                       {isEditing ? (
-                                        // Text editing mode
                                         <textarea
                                           ref={editingRef}
                                           value={ann.text}
@@ -1177,7 +1141,7 @@ export default function AddTextToPDF() {
                                           placeholder="Type here..."
                                           className="w-full h-full bg-transparent resize-none focus:outline-none overflow-hidden"
                                           style={{
-                                            fontSize: `${ann.fontSize}px`,
+                                            fontSize: toFontSizePx(ann.fontSize),
                                             color: ann.color,
                                             fontFamily: 'Helvetica, Arial, sans-serif',
                                             lineHeight: 1.2,
@@ -1190,11 +1154,10 @@ export default function AddTextToPDF() {
                                           onMouseDown={(e) => e.stopPropagation()}
                                         />
                                       ) : (
-                                        // Selected but not editing - show text and hint
                                         <div
                                           className="w-full h-full"
                                           style={{
-                                            fontSize: `${ann.fontSize}px`,
+                                            fontSize: toFontSizePx(ann.fontSize),
                                             color: ann.color,
                                             fontFamily: 'Helvetica, Arial, sans-serif',
                                             lineHeight: 1.2,
@@ -1209,33 +1172,28 @@ export default function AddTextToPDF() {
                                       )}
 
                                       {/* Corner resize handles */}
-                                      {/* NW */}
                                       <div
                                         className="absolute -left-1.5 -top-1.5 w-3 h-3 bg-blue-500 cursor-nw-resize border border-white"
                                         onMouseDown={(e) => handleResizeMouseDown(e, 'nw')}
                                       />
-                                      {/* NE */}
                                       <div
                                         className="absolute -right-1.5 -top-1.5 w-3 h-3 bg-blue-500 cursor-ne-resize border border-white"
                                         onMouseDown={(e) => handleResizeMouseDown(e, 'ne')}
                                       />
-                                      {/* SW */}
                                       <div
                                         className="absolute -left-1.5 -bottom-1.5 w-3 h-3 bg-blue-500 cursor-sw-resize border border-white"
                                         onMouseDown={(e) => handleResizeMouseDown(e, 'sw')}
                                       />
-                                      {/* SE */}
                                       <div
                                         className="absolute -right-1.5 -bottom-1.5 w-3 h-3 bg-blue-500 cursor-se-resize border border-white"
                                         onMouseDown={(e) => handleResizeMouseDown(e, 'se')}
                                       />
                                     </div>
                                   ) : (
-                                    // Display mode (not selected)
                                     <div
                                       className="cursor-pointer hover:outline hover:outline-2 hover:outline-blue-400 hover:outline-dashed"
                                       style={{
-                                        fontSize: `${ann.fontSize}px`,
+                                        fontSize: toFontSizePx(ann.fontSize),
                                         color: ann.color,
                                         fontFamily: 'Helvetica, Arial, sans-serif',
                                         lineHeight: 1.2,
@@ -1251,7 +1209,6 @@ export default function AddTextToPDF() {
                                 </div>
                               ))}
 
-                              {/* Crosshair cursor indicator */}
                               {activeTool === 'text' && (
                                 <div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-0 hover:opacity-100">
                                   <div className="bg-black text-white px-2 py-1 text-xs font-bold">
@@ -1267,7 +1224,6 @@ export default function AddTextToPDF() {
 
                     {/* Sidebar */}
                     <div className="lg:col-span-1 order-1 lg:order-2 space-y-4">
-                      {/* Instructions */}
                       <Card variant="outlined">
                         <CardBody>
                           <h3 className="font-bold uppercase tracking-wider text-sm mb-3">
@@ -1294,7 +1250,6 @@ export default function AddTextToPDF() {
                         </CardBody>
                       </Card>
 
-                      {/* Annotations List */}
                       <Card variant="outlined">
                         <CardBody>
                           <h3 className="font-bold uppercase tracking-wider text-sm mb-3">
@@ -1340,7 +1295,6 @@ export default function AddTextToPDF() {
                         </CardBody>
                       </Card>
 
-                      {/* Save Button */}
                       <Button
                         onClick={handleSave}
                         disabled={isProcessing || annotations.filter((a) => a.text.trim()).length === 0 || !file}
@@ -1361,7 +1315,6 @@ export default function AddTextToPDF() {
                 </div>
               )}
 
-              {/* Error Message */}
               {error && (
                 <div className="mt-4">
                   <Alert status="error">{error}</Alert>
