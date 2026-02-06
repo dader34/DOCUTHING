@@ -1,4 +1,4 @@
-import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import { PDFDocument, rgb, StandardFonts, degrees } from 'pdf-lib';
 
 /**
  * Converts a File to an ArrayBuffer
@@ -252,6 +252,7 @@ export interface AddTextOptions {
   y: number;
   fontSize: number;
   color: string;
+  rotation?: number;
 }
 
 /**
@@ -266,7 +267,7 @@ export async function addTextToPDF(
   text: string,
   options: AddTextOptions
 ): Promise<Uint8Array> {
-  const { page: pageNumber, x, y, fontSize, color } = options;
+  const { page: pageNumber, x, y, fontSize, color, rotation: textRotation } = options;
 
   const arrayBuffer = await fileToArrayBuffer(file);
   const pdf = await PDFDocument.load(arrayBuffer);
@@ -284,13 +285,32 @@ export async function addTextToPDF(
   const lines = text.split('\n');
   const lineHeight = fontSize * 1.2; // Match the editor's lineHeight of 1.2
 
+  // Counter-rotate text to appear upright on rotated pages
+  const rotateOption = textRotation ? { rotate: degrees(-textRotation) } : {};
+
   lines.forEach((line, index) => {
+    // For rotated pages, line offset direction changes with rotation
+    let lineX = x;
+    let lineY = y - (index * lineHeight);
+
+    if (textRotation === 90) {
+      lineX = x + (index * lineHeight);
+      lineY = y;
+    } else if (textRotation === 180) {
+      lineX = x;
+      lineY = y + (index * lineHeight);
+    } else if (textRotation === 270) {
+      lineX = x - (index * lineHeight);
+      lineY = y;
+    }
+
     page.drawText(line, {
-      x,
-      y: y - (index * lineHeight),
+      x: lineX,
+      y: lineY,
       size: fontSize,
       font,
       color: rgb(r, g, b),
+      ...rotateOption,
     });
   });
 
@@ -303,6 +323,11 @@ export interface PageInfo {
   // The offset needed to convert from visual coordinates to PDF coordinates
   offsetX: number;
   offsetY: number;
+  // Page rotation in degrees (0, 90, 180, 270)
+  rotation: number;
+  // Effective dimensions after rotation (swapped for 90°/270°)
+  effectiveWidth: number;
+  effectiveHeight: number;
 }
 
 /**
@@ -320,6 +345,7 @@ export async function getPdfPageInfo(file: File): Promise<PageInfo[]> {
   for (let i = 0; i < pageCount; i++) {
     const page = pdf.getPage(i);
     const { width, height } = page.getSize();
+    const rotation = page.getRotation().angle;
 
     // Check for CropBox - if it exists and differs from MediaBox,
     // we need to offset coordinates
@@ -331,8 +357,12 @@ export async function getPdfPageInfo(file: File): Promise<PageInfo[]> {
     const offsetX = cropBox.x - mediaBox.x;
     const offsetY = cropBox.y - mediaBox.y;
 
+    // For 90°/270° rotations, the effective (visual) dimensions are swapped
+    const isRotated90or270 = rotation === 90 || rotation === 270;
+    const effectiveWidth = isRotated90or270 ? height : width;
+    const effectiveHeight = isRotated90or270 ? width : height;
 
-    pageInfos.push({ width, height, offsetX, offsetY });
+    pageInfos.push({ width, height, offsetX, offsetY, rotation, effectiveWidth, effectiveHeight });
   }
 
   return pageInfos;

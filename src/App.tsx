@@ -10,10 +10,11 @@ import ExtractPages from './pages/ExtractPages';
 import PDFToImages from './pages/PDFToImages';
 import ImagesToPDF from './pages/ImagesToPDF';
 import AddTextToPDF from './pages/AddTextToPDF';
+import NotFound from './pages/NotFound';
 
 function App() {
   return (
-    <BrowserRouter basename="/DOCUTHING">
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/merge" element={<MergePDF />} />
@@ -25,7 +26,8 @@ function App() {
         <Route path="/extract" element={<ExtractPages />} />
         <Route path="/pdf-to-images" element={<PDFToImages />} />
         <Route path="/images-to-pdf" element={<ImagesToPDF />} />
-        <Route path="/add-text" element={<AddTextToPDF />} />
+        <Route path="/editor" element={<AddTextToPDF />} />
+        <Route path="*" element={<NotFound />} />
       </Routes>
     </BrowserRouter>
   );

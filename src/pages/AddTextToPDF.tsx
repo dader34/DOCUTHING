@@ -4,12 +4,17 @@ import Header from '../components/Header';
 import Footer from '../components/Footer';
 import FileDropzone from '../components/FileDropzone';
 import LoadingSpinner from '../components/LoadingSpinner';
-import { Button, Alert, Card, CardBody } from '@dader34/stylekit-ui';
+import { Alert } from '@dader34/stylekit-ui';
 import { addTextToPDF, getPdfPageInfo, type AddTextOptions, type PageInfo } from '../utils/pdfUtils';
-import { pdfToImagesWithDimensions } from '../utils/imageUtils';
+import { pdfToImagesWithDimensions, pdfToImages } from '../utils/imageUtils';
 import { downloadFile } from '../utils/fileUtils';
+import RotatePanel from '../components/tools/RotatePanel';
+import DeletePagesPanel from '../components/tools/DeletePagesPanel';
+import ReorderPanel from '../components/tools/ReorderPanel';
+import ExtractPanel from '../components/tools/ExtractPanel';
+import CompressPanel from '../components/tools/CompressPanel';
+import SplitPanel from '../components/tools/SplitPanel';
 import {
-  Type,
   Download,
   FileText,
   X,
@@ -25,7 +30,15 @@ import {
   Maximize,
   Undo2,
   Redo2,
+  PanelLeft,
+  RotateCw,
+  Scissors,
+  FileDown,
+  ListOrdered,
+  FileOutput,
 } from 'lucide-react';
+
+type EditorMode = 'edit' | 'rotate' | 'delete' | 'reorder' | 'extract' | 'split' | 'compress';
 
 // Annotation positions and sizes are stored in PDF points (1 point = 1/72 inch)
 // This ensures 1:1 correspondence with the output PDF
@@ -106,6 +119,9 @@ export default function AddTextToPDF() {
   const [showFontDropdown, setShowFontDropdown] = useState(false);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [clipboard, setClipboard] = useState<TextAnnotation | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [editorMode, setEditorMode] = useState<EditorMode>('edit');
+  const [thumbnails, setThumbnails] = useState<string[]>([]);
 
   const pageRef = useRef<HTMLDivElement>(null);
   const editingRef = useRef<HTMLTextAreaElement>(null);
@@ -117,8 +133,9 @@ export default function AddTextToPDF() {
   const fileName = file?.name || 'document.pdf';
 
   // Get current page info in PDF points
-  const currentPageInfo = pageInfos[currentPage] || { width: 595.276, height: 841.890, offsetX: 0, offsetY: 0 };
-  const currentDims = { width: currentPageInfo.width, height: currentPageInfo.height };
+  const currentPageInfo = pageInfos[currentPage] || { width: 595.276, height: 841.890, offsetX: 0, offsetY: 0, rotation: 0, effectiveWidth: 595.276, effectiveHeight: 841.890 };
+  // Use effective dimensions (rotation-aware) for display since pdf.js renders with rotation applied
+  const currentDims = { width: currentPageInfo.effectiveWidth, height: currentPageInfo.effectiveHeight };
 
   // The effective scale for display
   // At 100% zoom, we want the page to display at a reasonable size
@@ -264,11 +281,13 @@ export default function AddTextToPDF() {
 
       Promise.all([
         pdfToImagesWithDimensions(restoredFile),
-        getPdfPageInfo(restoredFile)
+        getPdfPageInfo(restoredFile),
+        pdfToImages(restoredFile)
       ])
-        .then(async ([result, pdfLibInfo]) => {
+        .then(async ([result, pdfLibInfo, thumbs]) => {
           setPages(result.images);
           setPageInfos(pdfLibInfo);
+          setThumbnails(thumbs);
           setIsLoading(false);
         })
         .catch((err) => {
@@ -348,6 +367,10 @@ export default function AddTextToPDF() {
       // Dimensions match - good
 
       setPages(result.images);
+
+      // Generate thumbnails for tool panels
+      const thumbs = await pdfToImages(selectedFile);
+      setThumbnails(thumbs);
 
       // Use pdf-lib info for consistency with output
       setPageInfos(pdfLibInfo);
@@ -641,14 +664,39 @@ export default function AddTextToPDF() {
 
       for (const annotation of nonEmptyAnnotations) {
         const pageIndex = annotation.page - 1;
-        const info = pageInfos[pageIndex] || { width: 595.276, height: 841.890, offsetX: 0, offsetY: 0 };
+        const info = pageInfos[pageIndex] || { width: 595.276, height: 841.890, offsetX: 0, offsetY: 0, rotation: 0, effectiveWidth: 595.276, effectiveHeight: 841.890 };
 
-        // Annotation coordinates are already in PDF points
-        // Add MediaBox offset and flip Y coordinate for PDF (origin at bottom-left)
-        // PDF drawText positions at baseline, which is roughly 0.2 * fontSize below the top
-        const pdfX = annotation.x + info.offsetX;
+        // Annotation coordinates are in the rotated visual space (PDF points)
+        // We need to transform them back to the unrotated MediaBox coordinate space
+        // pdf-lib's drawText operates in the unrotated space
         const baselineOffset = annotation.fontSize * 0.8; // Approximate ascender height
-        const pdfY = info.height - annotation.y - baselineOffset + info.offsetY;
+        const rotation = info.rotation || 0;
+
+        let pdfX: number;
+        let pdfY: number;
+
+        if (rotation === 0) {
+          // No rotation: standard coordinate transform
+          pdfX = annotation.x + info.offsetX;
+          pdfY = info.height - annotation.y - baselineOffset + info.offsetY;
+        } else if (rotation === 90) {
+          // Page rotated 90° CW: visual (x,y) maps to unrotated space
+          // Visual x -> PDF y (from bottom), visual y -> PDF x (from left)
+          pdfX = annotation.y + info.offsetX;
+          pdfY = annotation.x + baselineOffset + info.offsetY;
+        } else if (rotation === 180) {
+          // Page rotated 180°: both axes are flipped
+          pdfX = info.width - annotation.x - info.offsetX;
+          pdfY = annotation.y + baselineOffset + info.offsetY;
+        } else if (rotation === 270) {
+          // Page rotated 270° CW (90° CCW)
+          pdfX = info.height - annotation.y + info.offsetX;
+          pdfY = info.width - annotation.x - baselineOffset + info.offsetY;
+        } else {
+          // Fallback: no rotation
+          pdfX = annotation.x + info.offsetX;
+          pdfY = info.height - annotation.y - baselineOffset + info.offsetY;
+        }
 
 
         const options: AddTextOptions = {
@@ -657,6 +705,7 @@ export default function AddTextToPDF() {
           y: pdfY,
           fontSize: annotation.fontSize,
           color: annotation.color,
+          rotation,
         };
 
         const pdfBytes = await addTextToPDF(pdfData, annotation.text, options);
@@ -676,6 +725,7 @@ export default function AddTextToPDF() {
     setFile(null);
     setPages([]);
     setPageInfos([]);
+    setThumbnails([]);
     setAnnotations([]);
     setCurrentPage(0);
     setSelectedId(null);
@@ -683,8 +733,35 @@ export default function AddTextToPDF() {
     setZoom(100);
     setHistory([[]]);
     setHistoryIndex(0);
+    setEditorMode('edit');
     clearSession();
   };
+
+  // Called by tool panels when they modify the PDF (rotate, delete, reorder)
+  const handleFileUpdate = useCallback(async (newFile: File) => {
+    setFile(newFile);
+    setIsLoading(true);
+    setAnnotations([]);
+    setSelectedId(null);
+    setHistory([[]]);
+    setHistoryIndex(0);
+    setEditorMode('edit');
+    try {
+      const [result, pdfLibInfo, thumbs] = await Promise.all([
+        pdfToImagesWithDimensions(newFile),
+        getPdfPageInfo(newFile),
+        pdfToImages(newFile)
+      ]);
+      setPages(result.images);
+      setPageInfos(pdfLibInfo);
+      setThumbnails(thumbs);
+      setCurrentPage(prev => Math.min(prev, result.images.length - 1));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to reload PDF');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
   const zoomIn = () => {
     const currentIndex = ZOOM_LEVELS.findIndex((z) => z >= zoom);
@@ -773,13 +850,17 @@ export default function AddTextToPDF() {
         }
       }
       if (e.key === 'Escape') {
-        handleDeselect();
+        if (editorMode !== 'edit') {
+          setEditorMode('edit');
+        } else {
+          handleDeselect();
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedId, undo, redo, copyAnnotation, pasteAnnotation, clipboard]);
+  }, [selectedId, undo, redo, copyAnnotation, pasteAnnotation, clipboard, editorMode]);
 
   // Convert PDF points to percentage of page dimensions for positioning
   // This ensures annotations stay aligned with the image content
@@ -792,540 +873,628 @@ export default function AddTextToPDF() {
   // so text appears the same relative size regardless of page dimensions
   const toFontSizePx = (points: number) => points;
 
-  return (
-    <div className="min-h-screen flex flex-col">
-      <Header />
-
-      <main className="flex-1 pt-20 pb-12">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <Link
-            to="/"
-            className="inline-flex items-center gap-2 font-bold uppercase tracking-wider text-sm mb-8 no-underline hover:opacity-70"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            BACK TO HOME
-          </Link>
-
-          <div className="mb-8">
-            <div className="flex items-center gap-6 mb-4">
-              <div className="w-16 h-16 bg-orange-500 border-4 border-current flex items-center justify-center">
-                <Type className="w-8 h-8 text-white" />
-              </div>
-              <div>
-                <h1 className="text-3xl md:text-4xl font-bold tracking-tighter">
-                  ADD TEXT TO PDF
-                </h1>
-                <p className="opacity-70 font-mono mt-1 text-sm">
-                  CLICK TO ADD TEXT • DRAG TO MOVE • RESIZE WITH HANDLES
-                </p>
-              </div>
+  // No-file state: upload screen
+  if (!file && pages.length === 0) {
+    return (
+      <div className="min-h-screen flex flex-col">
+        <Header />
+        <main className="flex-1 pt-20 pb-12 flex items-center justify-center">
+          <div className="max-w-2xl w-full mx-auto px-4 sm:px-6 lg:px-8 text-center">
+            <div className="mb-8">
+              <h1 className="text-4xl md:text-5xl font-bold tracking-tighter mb-3">
+                PDF EDITOR
+              </h1>
+              <p className="opacity-70 font-mono text-sm">
+                ADD TEXT • ROTATE • DELETE • REORDER • EXTRACT • SPLIT • COMPRESS
+              </p>
             </div>
+
+            <FileDropzone
+              accept={{ 'application/pdf': ['.pdf'] }}
+              multiple={false}
+              maxFiles={1}
+              onFilesSelected={handleFileSelected}
+            />
           </div>
+        </main>
+        <Footer />
+      </div>
+    );
+  }
 
-          {!file && pages.length === 0 ? (
-            <div className="max-w-2xl mx-auto">
-              <FileDropzone
-                accept={{ 'application/pdf': ['.pdf'] }}
-                multiple={false}
-                maxFiles={1}
-                onFilesSelected={handleFileSelected}
-              />
-            </div>
-          ) : (
-            <>
-              {isLoading ? (
-                <LoadingSpinner message="LOADING PDF..." />
-              ) : (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-                    <div className="lg:col-span-3 order-2 lg:order-1">
-                      <Card variant="outlined">
-                        <CardBody className="p-0">
-                          {/* Toolbar */}
-                          <div className="flex flex-wrap items-center gap-3 p-3 border-b-4 border-current">
-                            <div className="flex border-4 border-current">
-                              <button
-                                onClick={() => setActiveTool('select')}
-                                className={`p-2 flex items-center gap-2 font-bold text-sm transition-colors ${
-                                  activeTool === 'select'
-                                    ? 'bg-black text-white'
-                                    : 'hover:bg-gray-100'
-                                }`}
-                                title="Select Tool (V)"
-                              >
-                                <MousePointer className="w-4 h-4" />
-                                <span className="hidden sm:inline">SELECT</span>
-                              </button>
-                              <button
-                                onClick={() => setActiveTool('text')}
-                                className={`p-2 flex items-center gap-2 font-bold text-sm border-l-4 border-current transition-colors ${
-                                  activeTool === 'text'
-                                    ? 'bg-black text-white'
-                                    : 'hover:bg-gray-100'
-                                }`}
-                                title="Text Tool (T)"
-                              >
-                                <Plus className="w-4 h-4" />
-                                <span className="hidden sm:inline">ADD TEXT</span>
-                              </button>
-                            </div>
+  // Editor state: full-viewport layout
+  return (
+    <div className="fixed inset-0 flex flex-col bg-gray-200 z-50">
+      {/* Editor Header Bar */}
+      <div className="h-12 bg-black text-white border-b-4 border-white flex items-center px-2 gap-2 flex-shrink-0">
+        {/* Left: Logo + Sidebar Toggle */}
+        <Link
+          to="/"
+          className="logo-link flex items-center gap-2 px-2 h-full no-underline text-white"
+        >
+          <div className="w-6 h-6 bg-[#ffff00] border-2 border-[#ffff00] flex items-center justify-center">
+            <span className="text-black font-bold text-xs">D</span>
+          </div>
+          <span className="font-bold text-xs tracking-wider hidden sm:inline text-[#ffff00]">DOCUTHING</span>
+        </Link>
 
-                            <div className="flex border-4 border-current">
-                              <button
-                                onClick={undo}
-                                disabled={!canUndo}
-                                className="p-2 hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                                title="Undo (Ctrl+Z)"
-                              >
-                                <Undo2 className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={redo}
-                                disabled={!canRedo}
-                                className="p-2 border-l-4 border-current hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                                title="Redo (Ctrl+Shift+Z)"
-                              >
-                                <Redo2 className="w-4 h-4" />
-                              </button>
-                            </div>
+        <div className="w-px h-6 bg-white/20" />
 
-                            <div className="flex-1" />
+        <button
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+          className={`p-1.5 transition-colors ${sidebarOpen ? 'bg-white/20' : 'hover:bg-white/10'}`}
+          title="Toggle sidebar"
+        >
+          <PanelLeft className="w-4 h-4" />
+        </button>
 
-                            {selectedId && (
-                              <button
-                                onClick={() => removeAnnotation(selectedId)}
-                                className="p-2 border-4 border-red-500 text-red-500 hover:bg-red-500 hover:text-white transition-colors"
-                                title="Delete (Del)"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            )}
+        <div className="w-px h-6 bg-white/20" />
 
-                            <div className="flex items-center gap-2 pl-2 border-l-4 border-current border-opacity-20">
-                              <FileText className="w-4 h-4 opacity-50" />
-                              <span className="font-mono text-xs opacity-70 max-w-[100px] truncate">
-                                {fileName}
-                              </span>
-                              <button
-                                onClick={resetFile}
-                                className="p-1 hover:bg-gray-200 transition-colors"
-                                title="Close file"
-                              >
-                                <X className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
+        {/* Tools */}
+        <div className="flex border-2 border-white/30">
+          <button
+            onClick={() => setActiveTool('select')}
+            className={`p-1.5 flex items-center gap-1.5 font-bold text-xs transition-colors ${
+              activeTool === 'select'
+                ? 'bg-[#ffff00] text-black'
+                : 'hover:bg-white/10'
+            }`}
+            title="Select Tool (V)"
+          >
+            <MousePointer className="w-3.5 h-3.5" />
+            <span className="hidden md:inline">SELECT</span>
+          </button>
+          <button
+            onClick={() => setActiveTool('text')}
+            className={`p-1.5 flex items-center gap-1.5 font-bold text-xs border-l-2 border-white/30 transition-colors ${
+              activeTool === 'text'
+                ? 'bg-[#ffff00] text-black'
+                : 'hover:bg-white/10'
+            }`}
+            title="Text Tool (T)"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span className="hidden md:inline">ADD TEXT</span>
+          </button>
+        </div>
 
-                          {/* Page Navigation & Zoom */}
-                          <div className="flex items-center justify-between p-3 border-b-4 border-current gap-4">
-                            <div className="flex items-center gap-2">
-                              <Button
-                                onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
-                                disabled={currentPage === 0}
-                                variant="outline"
-                              >
-                                <ChevronLeft className="w-4 h-4" />
-                              </Button>
-                              <span className="font-bold uppercase tracking-wider text-sm min-w-[100px] text-center">
-                                PAGE {currentPage + 1} / {pages.length}
-                              </span>
-                              <Button
-                                onClick={() =>
-                                  setCurrentPage((p) => Math.min(pages.length - 1, p + 1))
-                                }
-                                disabled={currentPage === pages.length - 1}
-                                variant="outline"
-                              >
-                                <ChevronRight className="w-4 h-4" />
-                              </Button>
-                            </div>
+        <div className="flex border-2 border-white/30">
+          <button
+            onClick={undo}
+            disabled={!canUndo}
+            className="p-1.5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            title="Undo (Ctrl+Z)"
+          >
+            <Undo2 className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={redo}
+            disabled={!canRedo}
+            className="p-1.5 border-l-2 border-white/30 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            title="Redo (Ctrl+Shift+Z)"
+          >
+            <Redo2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
 
-                            <div className="flex items-center gap-1 border-4 border-current">
-                              <button
-                                onClick={zoomOut}
-                                disabled={zoom <= ZOOM_LEVELS[0]}
-                                className="p-2 hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed"
-                                title="Zoom out"
-                              >
-                                <ZoomOut className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={resetZoom}
-                                className="px-3 py-1 font-bold text-sm hover:bg-[#ffff00] min-w-[60px]"
-                                title="Reset zoom"
-                              >
-                                {zoom}%
-                              </button>
-                              <button
-                                onClick={zoomIn}
-                                disabled={zoom >= ZOOM_LEVELS[ZOOM_LEVELS.length - 1]}
-                                className="p-2 hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed"
-                                title="Zoom in"
-                              >
-                                <ZoomIn className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={resetZoom}
-                                className="p-2 hover:bg-gray-100 border-l-2 border-current"
-                                title="Fit to window (100%)"
-                              >
-                                <Maximize className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
+        <div className="w-px h-6 bg-white/20" />
 
-                          {/* Page Content */}
-                          <div className="p-4 bg-gray-200 min-h-[500px] overflow-auto flex items-start justify-center">
-                            <div
-                              ref={pageRef}
-                              onClick={handlePageClick}
-                              className={`relative bg-white border-4 border-black shadow-[6px_6px_0_0_#000] select-none origin-top-left ${
-                                activeTool === 'text' ? 'cursor-crosshair' : 'cursor-default'
-                              }`}
-                              style={{
-                                // Container is sized to PDF dimensions (in points)
-                                // CSS transform handles both the 2x image scaling and user zoom
-                                width: currentDims.width,
-                                height: currentDims.height,
-                                transform: `scale(${effectiveScale})`,
-                                transformOrigin: 'top left',
-                              }}
-                            >
-                              <img
-                                src={pages[currentPage]}
-                                alt={`Page ${currentPage + 1}`}
-                                style={{
-                                  // Image is 2x size, so scale it to fit the container
-                                  width: currentDims.width,
-                                  height: currentDims.height,
-                                }}
-                                draggable={false}
+        {/* Page Navigation */}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
+            disabled={currentPage === 0}
+            className="p-1 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+          <span className="font-bold text-xs tracking-wider min-w-[70px] text-center">
+            {currentPage + 1} / {pages.length}
+          </span>
+          <button
+            onClick={() => setCurrentPage((p) => Math.min(pages.length - 1, p + 1))}
+            disabled={currentPage === pages.length - 1}
+            className="p-1 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex-1" />
+
+        {/* PDF Tools */}
+        <div className="flex border-2 border-white/30">
+          {([
+            { mode: 'rotate' as EditorMode, icon: RotateCw, label: 'ROTATE' },
+            { mode: 'delete' as EditorMode, icon: Trash2, label: 'DELETE' },
+            { mode: 'reorder' as EditorMode, icon: ListOrdered, label: 'REORDER' },
+            { mode: 'extract' as EditorMode, icon: FileOutput, label: 'EXTRACT' },
+            { mode: 'split' as EditorMode, icon: Scissors, label: 'SPLIT' },
+            { mode: 'compress' as EditorMode, icon: FileDown, label: 'COMPRESS' },
+          ]).map(({ mode, icon: Icon, label }, i) => (
+            <button
+              key={mode}
+              onClick={() => setEditorMode(editorMode === mode ? 'edit' : mode)}
+              className={`p-1.5 flex items-center gap-1 font-bold text-[10px] tracking-wider transition-colors ${
+                i > 0 ? 'border-l-2 border-white/30' : ''
+              } ${
+                editorMode === mode
+                  ? 'bg-[#ffff00] text-black'
+                  : 'hover:bg-white/10'
+              }`}
+              title={label}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              <span className="hidden lg:inline">{label}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="w-px h-6 bg-white/20" />
+
+        {/* Zoom */}
+        <div className="flex items-center border-2 border-white/30">
+          <button
+            onClick={zoomOut}
+            disabled={zoom <= ZOOM_LEVELS[0]}
+            className="p-1.5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
+            title="Zoom out"
+          >
+            <ZoomOut className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={resetZoom}
+            className="px-2 py-1 font-bold text-xs hover:bg-[#ffff00] hover:text-black min-w-[50px] text-center"
+            title="Reset zoom"
+          >
+            {zoom}%
+          </button>
+          <button
+            onClick={zoomIn}
+            disabled={zoom >= ZOOM_LEVELS[ZOOM_LEVELS.length - 1]}
+            className="p-1.5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
+            title="Zoom in"
+          >
+            <ZoomIn className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={resetZoom}
+            className="p-1.5 hover:bg-white/10 border-l-2 border-white/30"
+            title="Fit to window (100%)"
+          >
+            <Maximize className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {selectedId && editorMode === 'edit' && (
+          <>
+            <div className="w-px h-6 bg-white/20" />
+            <button
+              onClick={() => removeAnnotation(selectedId)}
+              className="p-1.5 border-2 border-red-500 text-red-400 hover:bg-red-500 hover:text-white transition-colors"
+              title="Delete (Del)"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </>
+        )}
+
+        <div className="w-px h-6 bg-white/20" />
+
+        {/* Save */}
+        <button
+          onClick={handleSave}
+          disabled={isProcessing || annotations.filter((a) => a.text.trim()).length === 0 || !file}
+          className="px-2.5 py-1 bg-[#ffff00] text-black font-bold text-xs uppercase tracking-wider border-2 border-[#ffff00] hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+          title="Save & Download"
+        >
+          <Download className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">{isProcessing ? 'SAVING...' : 'SAVE'}</span>
+        </button>
+
+        <div className="w-px h-6 bg-white/20" />
+
+        {/* File info & Close */}
+        <div className="flex items-center gap-2">
+          <FileText className="w-3.5 h-3.5 opacity-50" />
+          <span className="font-mono text-xs opacity-70 max-w-[120px] truncate hidden sm:inline">
+            {fileName}
+          </span>
+          <button
+            onClick={resetFile}
+            className="p-1.5 hover:bg-white/10 transition-colors"
+            title="Close file"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Loading State */}
+      {isLoading ? (
+        <div className="flex-1 flex items-center justify-center">
+          <LoadingSpinner message="LOADING PDF..." />
+        </div>
+      ) : (
+        /* Editor Body */
+        <div className="flex flex-1 overflow-hidden">
+          {/* Sidebar — Text Annotations */}
+          {editorMode === 'edit' && (
+            <div
+              className={`bg-white border-r-4 border-black flex flex-col flex-shrink-0 transition-all duration-200 overflow-hidden ${
+                sidebarOpen ? 'w-72' : 'w-0 border-r-0'
+              }`}
+            >
+              <div className="flex-1 overflow-y-auto p-3 space-y-3 min-w-[288px]">
+                {/* How to Use */}
+                <div className="border-b-4 border-current pb-3">
+                  <h3 className="font-bold uppercase tracking-wider text-xs mb-2">
+                    HOW TO USE
+                  </h3>
+                  <ul className="space-y-1.5 text-xs font-mono opacity-70">
+                    <li className="flex gap-2">
+                      <span className="font-bold">1.</span>
+                      <span>Click "ADD TEXT" then click on PDF</span>
+                    </li>
+                    <li className="flex gap-2">
+                      <span className="font-bold">2.</span>
+                      <span>Type your text in the box</span>
+                    </li>
+                    <li className="flex gap-2">
+                      <span className="font-bold">3.</span>
+                      <span>Drag to move, use handle to resize</span>
+                    </li>
+                    <li className="flex gap-2">
+                      <span className="font-bold">4.</span>
+                      <span>Press Del to delete selected</span>
+                    </li>
+                  </ul>
+                </div>
+
+                {/* Text Boxes */}
+                <div>
+                  <h3 className="font-bold uppercase tracking-wider text-xs mb-2">
+                    TEXT BOXES ({annotations.length})
+                  </h3>
+                  {annotations.length === 0 ? (
+                    <p className="text-xs font-mono opacity-50">
+                      No text added yet
+                    </p>
+                  ) : (
+                    <div className="space-y-1.5 max-h-[40vh] overflow-y-auto">
+                      {annotations.map((ann) => (
+                        <div
+                          key={ann.id}
+                          onClick={() => {
+                            setCurrentPage(ann.page - 1);
+                            setSelectedId(ann.id);
+                          }}
+                          className={`p-2 border-2 cursor-pointer transition-colors ${
+                            selectedId === ann.id
+                              ? 'border-blue-500 bg-blue-50'
+                              : 'border-current hover:bg-gray-50'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2 min-w-0 flex-1">
+                              <div
+                                className="w-3 h-3 flex-shrink-0 border border-current"
+                                style={{ backgroundColor: ann.color }}
                               />
-
-                              {/* Snap guide lines */}
-                              {snapGuides.map((guide, index) => (
-                                <div
-                                  key={`guide-${index}`}
-                                  className="absolute pointer-events-none z-30"
-                                  style={
-                                    guide.type === 'vertical'
-                                      ? {
-                                          left: `${toPercentX(guide.position)}%`,
-                                          top: 0,
-                                          bottom: 0,
-                                          width: '1px',
-                                          backgroundColor: '#f97316',
-                                        }
-                                      : {
-                                          top: `${toPercentY(guide.position)}%`,
-                                          left: 0,
-                                          right: 0,
-                                          height: '1px',
-                                          backgroundColor: '#f97316',
-                                        }
-                                  }
-                                />
-                              ))}
-
-                              {/* Render annotations */}
-                              {currentPageAnnotations.map((ann) => (
-                                <div
-                                  key={ann.id}
-                                  className={`text-annotation absolute group ${
-                                    selectedId === ann.id ? 'z-20' : 'z-10'
-                                  }`}
-                                  style={{
-                                    left: `${toPercentX(ann.x)}%`,
-                                    top: `${toPercentY(ann.y)}%`,
-                                    width: `${toPercentW(ann.width)}%`,
-                                    height: selectedId === ann.id ? `${toPercentH(ann.height)}%` : 'auto',
-                                    minWidth: `${toPercentW(40)}%`,
-                                    minHeight: toFontSizePx(ann.fontSize),
-                                  }}
-                                  onClick={(e) => handleAnnotationClick(e, ann.id)}
-                                  onDoubleClick={(e) => handleAnnotationDoubleClick(e, ann.id)}
-                                  onMouseDown={(e) => handleAnnotationMouseDown(e, ann.id)}
-                                >
-                                  {selectedId === ann.id ? (
-                                    <div
-                                      className="relative w-full h-full"
-                                      style={{
-                                        outline: isEditing ? '2px dashed #3b82f6' : '2px solid #3b82f6',
-                                        outlineOffset: '-2px',
-                                        background: 'rgba(59, 130, 246, 0.05)',
-                                      }}
-                                    >
-                                      {/* Toolbar */}
-                                      <div
-                                        className="absolute -top-7 left-0 flex items-center gap-1 bg-blue-500 text-white text-xs font-bold"
-                                        onClick={(e) => e.stopPropagation()}
-                                        onMouseDown={(e) => e.stopPropagation()}
-                                      >
-                                        <div
-                                          className="px-2 py-1 cursor-move flex items-center gap-1 hover:bg-blue-600"
-                                          onMouseDown={(e) => {
-                                            e.stopPropagation();
-                                            handleAnnotationMouseDown(e, ann.id);
-                                          }}
-                                        >
-                                          <Move className="w-3 h-3" />
-                                        </div>
-
-                                        <div className="relative" ref={fontDropdownRef}>
-                                          <button
-                                            className="px-2 py-1 hover:bg-blue-600 flex items-center gap-1"
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              setShowFontDropdown(!showFontDropdown);
-                                            }}
-                                          >
-                                            {ann.fontSize}pt
-                                            <svg className="w-2 h-2" fill="currentColor" viewBox="0 0 20 20">
-                                              <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
-                                            </svg>
-                                          </button>
-                                          {showFontDropdown && (
-                                            <div className="absolute top-full left-0 mt-1 bg-white border-2 border-black shadow-[4px_4px_0_0_#000] max-h-48 overflow-y-auto z-50">
-                                              {FONT_SIZES.map((size) => (
-                                                <button
-                                                  key={size}
-                                                  className={`block w-full px-3 py-1 text-left text-black hover:bg-[#ffff00] ${
-                                                    ann.fontSize === size ? 'bg-gray-200 font-bold' : ''
-                                                  }`}
-                                                  onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    updateAnnotationStyle(ann.id, { fontSize: size });
-                                                    setShowFontDropdown(false);
-                                                  }}
-                                                >
-                                                  {size}pt
-                                                </button>
-                                              ))}
-                                            </div>
-                                          )}
-                                        </div>
-
-                                        <div className="flex items-center px-1 gap-0.5">
-                                          {COLORS.map((c) => (
-                                            <button
-                                              key={c.value}
-                                              className={`w-4 h-4 border ${
-                                                ann.color === c.value ? 'border-white border-2' : 'border-blue-400'
-                                              }`}
-                                              style={{ backgroundColor: c.value }}
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                updateAnnotationStyle(ann.id, { color: c.value });
-                                              }}
-                                              title={c.name}
-                                            />
-                                          ))}
-                                        </div>
-
-                                        <button
-                                          className="px-2 py-1 bg-red-500 hover:bg-red-600"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            removeAnnotation(ann.id);
-                                          }}
-                                        >
-                                          <X className="w-3 h-3" />
-                                        </button>
-                                      </div>
-
-                                      {isEditing ? (
-                                        <textarea
-                                          ref={editingRef}
-                                          value={ann.text}
-                                          onChange={(e) => updateAnnotationText(ann.id, e.target.value)}
-                                          placeholder="Type here..."
-                                          className="w-full h-full bg-transparent resize-none focus:outline-none overflow-hidden"
-                                          style={{
-                                            fontSize: toFontSizePx(ann.fontSize),
-                                            color: ann.color,
-                                            fontFamily: 'Helvetica, Arial, sans-serif',
-                                            lineHeight: 1.2,
-                                            scrollbarWidth: 'none',
-                                            minHeight: '100%',
-                                            padding: 0,
-                                            margin: 0,
-                                          }}
-                                          onClick={(e) => e.stopPropagation()}
-                                          onMouseDown={(e) => e.stopPropagation()}
-                                        />
-                                      ) : (
-                                        <div
-                                          className="w-full h-full"
-                                          style={{
-                                            fontSize: toFontSizePx(ann.fontSize),
-                                            color: ann.color,
-                                            fontFamily: 'Helvetica, Arial, sans-serif',
-                                            lineHeight: 1.2,
-                                            whiteSpace: 'pre-wrap',
-                                            wordBreak: 'break-word',
-                                          }}
-                                        >
-                                          {ann.text || (
-                                            <span className="opacity-30 italic">Double-click to edit</span>
-                                          )}
-                                        </div>
-                                      )}
-
-                                      {/* Corner resize handles */}
-                                      <div
-                                        className="absolute -left-1.5 -top-1.5 w-3 h-3 bg-blue-500 cursor-nw-resize border border-white"
-                                        onMouseDown={(e) => handleResizeMouseDown(e, 'nw')}
-                                      />
-                                      <div
-                                        className="absolute -right-1.5 -top-1.5 w-3 h-3 bg-blue-500 cursor-ne-resize border border-white"
-                                        onMouseDown={(e) => handleResizeMouseDown(e, 'ne')}
-                                      />
-                                      <div
-                                        className="absolute -left-1.5 -bottom-1.5 w-3 h-3 bg-blue-500 cursor-sw-resize border border-white"
-                                        onMouseDown={(e) => handleResizeMouseDown(e, 'sw')}
-                                      />
-                                      <div
-                                        className="absolute -right-1.5 -bottom-1.5 w-3 h-3 bg-blue-500 cursor-se-resize border border-white"
-                                        onMouseDown={(e) => handleResizeMouseDown(e, 'se')}
-                                      />
-                                    </div>
-                                  ) : (
-                                    <div
-                                      className="cursor-pointer hover:outline hover:outline-2 hover:outline-blue-400 hover:outline-dashed"
-                                      style={{
-                                        fontSize: toFontSizePx(ann.fontSize),
-                                        color: ann.color,
-                                        fontFamily: 'Helvetica, Arial, sans-serif',
-                                        lineHeight: 1.2,
-                                        whiteSpace: 'pre-wrap',
-                                        wordBreak: 'break-word',
-                                      }}
-                                    >
-                                      {ann.text || (
-                                        <span className="opacity-30 italic">Empty text</span>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              ))}
-
-                              {activeTool === 'text' && (
-                                <div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-0 hover:opacity-100">
-                                  <div className="bg-black text-white px-2 py-1 text-xs font-bold">
-                                    CLICK TO ADD TEXT
-                                  </div>
-                                </div>
-                              )}
+                              <span className="text-xs font-mono truncate">
+                                {ann.text || '(empty)'}
+                              </span>
                             </div>
+                            <span className="text-xs opacity-50 ml-2">
+                              P{ann.page}
+                            </span>
                           </div>
-                        </CardBody>
-                      </Card>
+                        </div>
+                      ))}
                     </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
-                    {/* Sidebar */}
-                    <div className="lg:col-span-1 order-1 lg:order-2 space-y-4">
-                      <Card variant="outlined">
-                        <CardBody>
-                          <h3 className="font-bold uppercase tracking-wider text-sm mb-3">
-                            HOW TO USE
-                          </h3>
-                          <ul className="space-y-2 text-xs font-mono opacity-70">
-                            <li className="flex gap-2">
-                              <span className="font-bold">1.</span>
-                              <span>Click "ADD TEXT" then click on PDF</span>
-                            </li>
-                            <li className="flex gap-2">
-                              <span className="font-bold">2.</span>
-                              <span>Type your text in the box</span>
-                            </li>
-                            <li className="flex gap-2">
-                              <span className="font-bold">3.</span>
-                              <span>Drag to move, use handle to resize</span>
-                            </li>
-                            <li className="flex gap-2">
-                              <span className="font-bold">4.</span>
-                              <span>Press Del to delete selected</span>
-                            </li>
-                          </ul>
-                        </CardBody>
-                      </Card>
+          {/* Canvas Area */}
+          <div className="flex-1 overflow-auto p-4 flex items-start justify-center">
+            {editorMode !== 'edit' && file && (
+              <div className="w-full max-w-4xl mx-auto">
+                {/* Tool Mode Header */}
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="font-bold uppercase tracking-wider text-sm">
+                    {editorMode === 'rotate' && 'ROTATE PAGES'}
+                    {editorMode === 'delete' && 'DELETE PAGES'}
+                    {editorMode === 'reorder' && 'REORDER PAGES'}
+                    {editorMode === 'extract' && 'EXTRACT PAGES'}
+                    {editorMode === 'split' && 'SPLIT PDF'}
+                    {editorMode === 'compress' && 'COMPRESS PDF'}
+                  </h2>
+                  <button
+                    onClick={() => setEditorMode('edit')}
+                    className="px-3 py-1.5 text-xs font-bold uppercase border-2 border-current hover:bg-black hover:text-white transition-colors flex items-center gap-1.5"
+                  >
+                    <ArrowLeft className="w-3 h-3" />
+                    BACK TO EDITOR
+                  </button>
+                </div>
 
-                      <Card variant="outlined">
-                        <CardBody>
-                          <h3 className="font-bold uppercase tracking-wider text-sm mb-3">
-                            TEXT BOXES ({annotations.length})
-                          </h3>
-                          {annotations.length === 0 ? (
-                            <p className="text-xs font-mono opacity-50">
-                              No text added yet
-                            </p>
-                          ) : (
-                            <div className="space-y-2 max-h-64 overflow-y-auto">
-                              {annotations.map((ann) => (
-                                <div
-                                  key={ann.id}
-                                  onClick={() => {
-                                    setCurrentPage(ann.page - 1);
-                                    setSelectedId(ann.id);
-                                  }}
-                                  className={`p-2 border-2 cursor-pointer transition-colors ${
-                                    selectedId === ann.id
-                                      ? 'border-blue-500 bg-blue-50'
-                                      : 'border-current hover:bg-gray-50'
+                {/* Tool Panel Content */}
+                <div className="bg-white border-4 border-black p-6 shadow-[6px_6px_0_0_#000]">
+                  {editorMode === 'rotate' && (
+                    <RotatePanel file={file} thumbnails={thumbnails} onFileUpdate={handleFileUpdate} />
+                  )}
+                  {editorMode === 'delete' && (
+                    <DeletePagesPanel file={file} thumbnails={thumbnails} onFileUpdate={handleFileUpdate} />
+                  )}
+                  {editorMode === 'reorder' && (
+                    <ReorderPanel file={file} thumbnails={thumbnails} onFileUpdate={handleFileUpdate} />
+                  )}
+                  {editorMode === 'extract' && (
+                    <ExtractPanel file={file} thumbnails={thumbnails} />
+                  )}
+                  {editorMode === 'split' && (
+                    <SplitPanel file={file} thumbnails={thumbnails} />
+                  )}
+                  {editorMode === 'compress' && (
+                    <CompressPanel file={file} />
+                  )}
+                </div>
+              </div>
+            )}
+
+            {editorMode === 'edit' && (
+            <div
+              ref={pageRef}
+              onClick={handlePageClick}
+              className={`relative bg-white border-4 border-black shadow-[6px_6px_0_0_#000] select-none origin-top-left ${
+                activeTool === 'text' ? 'cursor-crosshair' : 'cursor-default'
+              }`}
+              style={{
+                width: currentDims.width,
+                height: currentDims.height,
+                transform: `scale(${effectiveScale})`,
+                transformOrigin: 'top left',
+              }}
+            >
+              <img
+                src={pages[currentPage]}
+                alt={`Page ${currentPage + 1}`}
+                style={{
+                  width: currentDims.width,
+                  height: currentDims.height,
+                }}
+                draggable={false}
+              />
+
+              {/* Snap guide lines */}
+              {snapGuides.map((guide, index) => (
+                <div
+                  key={`guide-${index}`}
+                  className="absolute pointer-events-none z-30"
+                  style={
+                    guide.type === 'vertical'
+                      ? {
+                          left: `${toPercentX(guide.position)}%`,
+                          top: 0,
+                          bottom: 0,
+                          width: '1px',
+                          backgroundColor: '#f97316',
+                        }
+                      : {
+                          top: `${toPercentY(guide.position)}%`,
+                          left: 0,
+                          right: 0,
+                          height: '1px',
+                          backgroundColor: '#f97316',
+                        }
+                  }
+                />
+              ))}
+
+              {/* Render annotations */}
+              {currentPageAnnotations.map((ann) => (
+                <div
+                  key={ann.id}
+                  className={`text-annotation absolute group ${
+                    selectedId === ann.id ? 'z-20' : 'z-10'
+                  }`}
+                  style={{
+                    left: `${toPercentX(ann.x)}%`,
+                    top: `${toPercentY(ann.y)}%`,
+                    width: `${toPercentW(ann.width)}%`,
+                    height: selectedId === ann.id ? `${toPercentH(ann.height)}%` : 'auto',
+                    minWidth: `${toPercentW(40)}%`,
+                    minHeight: toFontSizePx(ann.fontSize),
+                  }}
+                  onClick={(e) => handleAnnotationClick(e, ann.id)}
+                  onDoubleClick={(e) => handleAnnotationDoubleClick(e, ann.id)}
+                  onMouseDown={(e) => handleAnnotationMouseDown(e, ann.id)}
+                >
+                  {selectedId === ann.id ? (
+                    <div
+                      className="relative w-full h-full"
+                      style={{
+                        outline: isEditing ? '2px dashed #3b82f6' : '2px solid #3b82f6',
+                        outlineOffset: '-2px',
+                        background: 'rgba(59, 130, 246, 0.05)',
+                      }}
+                    >
+                      {/* Annotation Toolbar */}
+                      <div
+                        className="absolute -top-7 left-0 flex items-center gap-1 bg-blue-500 text-white text-xs font-bold"
+                        onClick={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => e.stopPropagation()}
+                      >
+                        <div
+                          className="px-2 py-1 cursor-move flex items-center gap-1 hover:bg-blue-600"
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            handleAnnotationMouseDown(e, ann.id);
+                          }}
+                        >
+                          <Move className="w-3 h-3" />
+                        </div>
+
+                        <div className="relative" ref={fontDropdownRef}>
+                          <button
+                            className="px-2 py-1 hover:bg-blue-600 flex items-center gap-1"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShowFontDropdown(!showFontDropdown);
+                            }}
+                          >
+                            {ann.fontSize}pt
+                            <svg className="w-2 h-2" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                            </svg>
+                          </button>
+                          {showFontDropdown && (
+                            <div className="absolute top-full left-0 mt-1 bg-white border-2 border-black shadow-[4px_4px_0_0_#000] max-h-48 overflow-y-auto z-50">
+                              {FONT_SIZES.map((size) => (
+                                <button
+                                  key={size}
+                                  className={`block w-full px-3 py-1 text-left text-black hover:bg-[#ffff00] ${
+                                    ann.fontSize === size ? 'bg-gray-200 font-bold' : ''
                                   }`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    updateAnnotationStyle(ann.id, { fontSize: size });
+                                    setShowFontDropdown(false);
+                                  }}
                                 >
-                                  <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-2 min-w-0 flex-1">
-                                      <div
-                                        className="w-3 h-3 flex-shrink-0 border border-current"
-                                        style={{ backgroundColor: ann.color }}
-                                      />
-                                      <span className="text-xs font-mono truncate">
-                                        {ann.text || '(empty)'}
-                                      </span>
-                                    </div>
-                                    <span className="text-xs opacity-50 ml-2">
-                                      P{ann.page}
-                                    </span>
-                                  </div>
-                                </div>
+                                  {size}pt
+                                </button>
                               ))}
                             </div>
                           )}
-                        </CardBody>
-                      </Card>
+                        </div>
 
-                      <Button
-                        onClick={handleSave}
-                        disabled={isProcessing || annotations.filter((a) => a.text.trim()).length === 0 || !file}
-                        variant="primary"
-                        className="w-full"
-                      >
-                        {isProcessing ? (
-                          <LoadingSpinner message="SAVING..." />
-                        ) : (
-                          <span className="inline-flex items-center">
-                            <Download className="w-5 h-5 mr-2" />
-                            SAVE & DOWNLOAD
-                          </span>
-                        )}
-                      </Button>
+                        <div className="flex items-center px-1 gap-0.5">
+                          {COLORS.map((c) => (
+                            <button
+                              key={c.value}
+                              className={`w-4 h-4 border ${
+                                ann.color === c.value ? 'border-white border-2' : 'border-blue-400'
+                              }`}
+                              style={{ backgroundColor: c.value }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                updateAnnotationStyle(ann.id, { color: c.value });
+                              }}
+                              title={c.name}
+                            />
+                          ))}
+                        </div>
+
+                        <button
+                          className="px-2 py-1 bg-red-500 hover:bg-red-600"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeAnnotation(ann.id);
+                          }}
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+
+                      {isEditing ? (
+                        <textarea
+                          ref={editingRef}
+                          value={ann.text}
+                          onChange={(e) => updateAnnotationText(ann.id, e.target.value)}
+                          placeholder="Type here..."
+                          className="w-full h-full bg-transparent resize-none focus:outline-none overflow-hidden"
+                          style={{
+                            fontSize: toFontSizePx(ann.fontSize),
+                            color: ann.color,
+                            fontFamily: 'Helvetica, Arial, sans-serif',
+                            lineHeight: 1.2,
+                            scrollbarWidth: 'none',
+                            minHeight: '100%',
+                            padding: 0,
+                            margin: 0,
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          onMouseDown={(e) => e.stopPropagation()}
+                        />
+                      ) : (
+                        <div
+                          className="w-full h-full"
+                          style={{
+                            fontSize: toFontSizePx(ann.fontSize),
+                            color: ann.color,
+                            fontFamily: 'Helvetica, Arial, sans-serif',
+                            lineHeight: 1.2,
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {ann.text || (
+                            <span className="opacity-30 italic">Double-click to edit</span>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Corner resize handles */}
+                      <div
+                        className="absolute -left-1.5 -top-1.5 w-3 h-3 bg-blue-500 cursor-nw-resize border border-white"
+                        onMouseDown={(e) => handleResizeMouseDown(e, 'nw')}
+                      />
+                      <div
+                        className="absolute -right-1.5 -top-1.5 w-3 h-3 bg-blue-500 cursor-ne-resize border border-white"
+                        onMouseDown={(e) => handleResizeMouseDown(e, 'ne')}
+                      />
+                      <div
+                        className="absolute -left-1.5 -bottom-1.5 w-3 h-3 bg-blue-500 cursor-sw-resize border border-white"
+                        onMouseDown={(e) => handleResizeMouseDown(e, 'sw')}
+                      />
+                      <div
+                        className="absolute -right-1.5 -bottom-1.5 w-3 h-3 bg-blue-500 cursor-se-resize border border-white"
+                        onMouseDown={(e) => handleResizeMouseDown(e, 'se')}
+                      />
                     </div>
+                  ) : (
+                    <div
+                      className="cursor-pointer hover:outline hover:outline-2 hover:outline-blue-400 hover:outline-dashed"
+                      style={{
+                        fontSize: toFontSizePx(ann.fontSize),
+                        color: ann.color,
+                        fontFamily: 'Helvetica, Arial, sans-serif',
+                        lineHeight: 1.2,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                      }}
+                    >
+                      {ann.text || (
+                        <span className="opacity-30 italic">Empty text</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              {activeTool === 'text' && (
+                <div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-0 hover:opacity-100">
+                  <div className="bg-black text-white px-2 py-1 text-xs font-bold">
+                    CLICK TO ADD TEXT
                   </div>
                 </div>
               )}
-
-              {error && (
-                <div className="mt-4">
-                  <Alert status="error">{error}</Alert>
-                </div>
-              )}
-            </>
-          )}
+            </div>
+            )}
+          </div>
         </div>
-      </main>
+      )}
 
-      <Footer />
+      {/* Error Toast */}
+      {error && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50">
+          <Alert status="error">{error}</Alert>
+        </div>
+      )}
     </div>
   );
 }

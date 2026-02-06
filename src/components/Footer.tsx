@@ -18,30 +18,15 @@ export default function Footer() {
             </p>
           </div>
 
-          {/* Tools */}
+          {/* Editor */}
           <div>
             <h3 className="text-sm font-bold tracking-wider mb-4 text-[#ffff00]">
-              TOOLS
+              EDITOR
             </h3>
             <ul className="space-y-2 text-sm">
               <li>
-                <Link to="/merge" className="nav-link text-white hover:text-[#ffff00] hover:bg-transparent no-underline">
-                  → MERGE PDF
-                </Link>
-              </li>
-              <li>
-                <Link to="/split" className="nav-link text-white hover:text-[#ffff00] hover:bg-transparent no-underline">
-                  → SPLIT PDF
-                </Link>
-              </li>
-              <li>
-                <Link to="/compress" className="nav-link text-white hover:text-[#ffff00] hover:bg-transparent no-underline">
-                  → COMPRESS PDF
-                </Link>
-              </li>
-              <li>
-                <Link to="/pdf-to-images" className="nav-link text-white hover:text-[#ffff00] hover:bg-transparent no-underline">
-                  → PDF TO IMAGES
+                <Link to="/editor" className="nav-link text-white hover:text-[#ffff00] hover:bg-transparent no-underline">
+                  → OPEN EDITOR
                 </Link>
               </li>
             </ul>
