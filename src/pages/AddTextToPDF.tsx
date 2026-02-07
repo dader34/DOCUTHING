@@ -27,7 +27,6 @@ import {
   MousePointer,
   ZoomIn,
   ZoomOut,
-  Maximize,
   Undo2,
   Redo2,
   PanelLeft,
@@ -905,12 +904,12 @@ export default function AddTextToPDF() {
   // Editor state: full-viewport layout
   return (
     <div className="fixed inset-0 flex flex-col bg-gray-200 z-50">
-      {/* Editor Header Bar */}
-      <div className="h-12 bg-black text-white border-b-4 border-white flex items-center px-2 gap-2 flex-shrink-0">
-        {/* Left: Logo + Sidebar Toggle */}
+      {/* Editor Header Bar — Row 1 */}
+      <div className="h-10 md:h-12 bg-black text-white flex items-center px-1.5 md:px-2 gap-1 md:gap-2 flex-shrink-0">
+        {/* Logo */}
         <Link
           to="/"
-          className="logo-link flex items-center gap-2 px-2 h-full no-underline text-white"
+          className="logo-link flex items-center gap-2 px-1 md:px-2 h-full no-underline text-white"
         >
           <div className="w-6 h-6 bg-[#ffff00] border-2 border-[#ffff00] flex items-center justify-center">
             <span className="text-black font-bold text-xs">D</span>
@@ -918,11 +917,12 @@ export default function AddTextToPDF() {
           <span className="font-bold text-xs tracking-wider hidden sm:inline text-[#ffff00]">DOCUTHING</span>
         </Link>
 
-        <div className="w-px h-6 bg-white/20" />
+        <div className="w-px h-6 bg-white/20 hidden md:block" />
 
+        {/* Sidebar Toggle — desktop only */}
         <button
           onClick={() => setSidebarOpen(!sidebarOpen)}
-          className={`p-1.5 transition-colors ${sidebarOpen ? 'bg-white/20' : 'hover:bg-white/10'}`}
+          className={`p-1.5 transition-colors hidden md:block ${sidebarOpen ? 'bg-white/20' : 'hover:bg-white/10'}`}
           title="Toggle sidebar"
         >
           <PanelLeft className="w-4 h-4" />
@@ -930,12 +930,12 @@ export default function AddTextToPDF() {
 
         <div className="w-px h-6 bg-white/20" />
 
-        {/* Tools */}
+        {/* Canvas Tools */}
         <div className="flex border-2 border-white/30">
           <button
-            onClick={() => setActiveTool('select')}
+            onClick={() => { setActiveTool('select'); setEditorMode('edit'); }}
             className={`p-1.5 flex items-center gap-1.5 font-bold text-xs transition-colors ${
-              activeTool === 'select'
+              activeTool === 'select' && editorMode === 'edit'
                 ? 'bg-[#ffff00] text-black'
                 : 'hover:bg-white/10'
             }`}
@@ -945,19 +945,20 @@ export default function AddTextToPDF() {
             <span className="hidden md:inline">SELECT</span>
           </button>
           <button
-            onClick={() => setActiveTool('text')}
+            onClick={() => { setActiveTool('text'); setEditorMode('edit'); }}
             className={`p-1.5 flex items-center gap-1.5 font-bold text-xs border-l-2 border-white/30 transition-colors ${
-              activeTool === 'text'
+              activeTool === 'text' && editorMode === 'edit'
                 ? 'bg-[#ffff00] text-black'
                 : 'hover:bg-white/10'
             }`}
             title="Text Tool (T)"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span className="hidden md:inline">ADD TEXT</span>
+            <span className="hidden md:inline">TEXT</span>
           </button>
         </div>
 
+        {/* Undo/Redo */}
         <div className="flex border-2 border-white/30">
           <button
             onClick={undo}
@@ -980,7 +981,7 @@ export default function AddTextToPDF() {
         <div className="w-px h-6 bg-white/20" />
 
         {/* Page Navigation */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
           <button
             onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
             disabled={currentPage === 0}
@@ -988,8 +989,8 @@ export default function AddTextToPDF() {
           >
             <ChevronLeft className="w-4 h-4" />
           </button>
-          <span className="font-bold text-xs tracking-wider min-w-[70px] text-center">
-            {currentPage + 1} / {pages.length}
+          <span className="font-bold text-xs tracking-wider min-w-[50px] text-center">
+            {currentPage + 1}/{pages.length}
           </span>
           <button
             onClick={() => setCurrentPage((p) => Math.min(pages.length - 1, p + 1))}
@@ -1002,38 +1003,8 @@ export default function AddTextToPDF() {
 
         <div className="flex-1" />
 
-        {/* PDF Tools */}
-        <div className="flex border-2 border-white/30">
-          {([
-            { mode: 'rotate' as EditorMode, icon: RotateCw, label: 'ROTATE' },
-            { mode: 'delete' as EditorMode, icon: Trash2, label: 'DELETE' },
-            { mode: 'reorder' as EditorMode, icon: ListOrdered, label: 'REORDER' },
-            { mode: 'extract' as EditorMode, icon: FileOutput, label: 'EXTRACT' },
-            { mode: 'split' as EditorMode, icon: Scissors, label: 'SPLIT' },
-            { mode: 'compress' as EditorMode, icon: FileDown, label: 'COMPRESS' },
-          ]).map(({ mode, icon: Icon, label }, i) => (
-            <button
-              key={mode}
-              onClick={() => setEditorMode(editorMode === mode ? 'edit' : mode)}
-              className={`p-1.5 flex items-center gap-1 font-bold text-[10px] tracking-wider transition-colors ${
-                i > 0 ? 'border-l-2 border-white/30' : ''
-              } ${
-                editorMode === mode
-                  ? 'bg-[#ffff00] text-black'
-                  : 'hover:bg-white/10'
-              }`}
-              title={label}
-            >
-              <Icon className="w-3.5 h-3.5" />
-              <span className="hidden lg:inline">{label}</span>
-            </button>
-          ))}
-        </div>
-
-        <div className="w-px h-6 bg-white/20" />
-
-        {/* Zoom */}
-        <div className="flex items-center border-2 border-white/30">
+        {/* Zoom — hidden on small screens */}
+        <div className="hidden sm:flex items-center border-2 border-white/30">
           <button
             onClick={zoomOut}
             disabled={zoom <= ZOOM_LEVELS[0]}
@@ -1044,7 +1015,7 @@ export default function AddTextToPDF() {
           </button>
           <button
             onClick={resetZoom}
-            className="px-2 py-1 font-bold text-xs hover:bg-[#ffff00] hover:text-black min-w-[50px] text-center"
+            className="px-2 py-1 font-bold text-xs hover:bg-[#ffff00] hover:text-black min-w-[40px] text-center"
             title="Reset zoom"
           >
             {zoom}%
@@ -1056,13 +1027,6 @@ export default function AddTextToPDF() {
             title="Zoom in"
           >
             <ZoomIn className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={resetZoom}
-            className="p-1.5 hover:bg-white/10 border-l-2 border-white/30"
-            title="Fit to window (100%)"
-          >
-            <Maximize className="w-3.5 h-3.5" />
           </button>
         </div>
 
@@ -1085,28 +1049,58 @@ export default function AddTextToPDF() {
         <button
           onClick={handleSave}
           disabled={isProcessing || annotations.filter((a) => a.text.trim()).length === 0 || !file}
-          className="px-2.5 py-1 bg-[#ffff00] text-black font-bold text-xs uppercase tracking-wider border-2 border-[#ffff00] hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+          className="p-1.5 md:px-2.5 md:py-1 bg-[#ffff00] text-black font-bold text-xs uppercase tracking-wider border-2 border-[#ffff00] hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
           title="Save & Download"
         >
           <Download className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">{isProcessing ? 'SAVING...' : 'SAVE'}</span>
+          <span className="hidden md:inline">{isProcessing ? 'SAVING...' : 'SAVE'}</span>
         </button>
 
-        <div className="w-px h-6 bg-white/20" />
+        {/* Close */}
+        <button
+          onClick={resetFile}
+          className="p-1.5 hover:bg-white/10 transition-colors"
+          title="Close file"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
 
-        {/* File info & Close */}
-        <div className="flex items-center gap-2">
-          <FileText className="w-3.5 h-3.5 opacity-50" />
-          <span className="font-mono text-xs opacity-70 max-w-[120px] truncate hidden sm:inline">
-            {fileName}
-          </span>
-          <button
-            onClick={resetFile}
-            className="p-1.5 hover:bg-white/10 transition-colors"
-            title="Close file"
-          >
-            <X className="w-4 h-4" />
-          </button>
+      {/* Editor Header Bar — Row 2: PDF Tools */}
+      <div className="h-9 bg-gray-900 text-white flex items-center px-1.5 md:px-2 gap-1 flex-shrink-0 border-t border-white/10">
+        <div className="flex border-2 border-white/20 overflow-x-auto">
+          {([
+            { mode: 'rotate' as EditorMode, icon: RotateCw, label: 'ROTATE' },
+            { mode: 'delete' as EditorMode, icon: Trash2, label: 'DELETE' },
+            { mode: 'reorder' as EditorMode, icon: ListOrdered, label: 'REORDER' },
+            { mode: 'extract' as EditorMode, icon: FileOutput, label: 'EXTRACT' },
+            { mode: 'split' as EditorMode, icon: Scissors, label: 'SPLIT' },
+            { mode: 'compress' as EditorMode, icon: FileDown, label: 'COMPRESS' },
+          ]).map(({ mode, icon: Icon, label }, i) => (
+            <button
+              key={mode}
+              onClick={() => setEditorMode(editorMode === mode ? 'edit' : mode)}
+              className={`px-2 py-1 flex items-center gap-1.5 font-bold text-[10px] tracking-wider transition-colors whitespace-nowrap ${
+                i > 0 ? 'border-l-2 border-white/20' : ''
+              } ${
+                editorMode === mode
+                  ? 'bg-[#ffff00] text-black'
+                  : 'hover:bg-white/10'
+              }`}
+              title={label}
+            >
+              <Icon className="w-3 h-3" />
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex-1" />
+
+        {/* File name — right side */}
+        <div className="hidden sm:flex items-center gap-1.5 opacity-50">
+          <FileText className="w-3 h-3" />
+          <span className="font-mono text-[10px] max-w-[150px] truncate">{fileName}</span>
         </div>
       </div>
 
@@ -1121,11 +1115,11 @@ export default function AddTextToPDF() {
           {/* Sidebar — Text Annotations */}
           {editorMode === 'edit' && (
             <div
-              className={`bg-white border-r-4 border-black flex flex-col flex-shrink-0 transition-all duration-200 overflow-hidden ${
-                sidebarOpen ? 'w-72' : 'w-0 border-r-0'
+              className={`bg-white border-r-4 border-black flex-col transition-all duration-200 overflow-hidden hidden md:flex ${
+                sidebarOpen ? 'w-72 flex-shrink-0' : 'w-0 border-r-0'
               }`}
             >
-              <div className="flex-1 overflow-y-auto p-3 space-y-3 min-w-[288px]">
+              <div className="flex-1 overflow-y-auto p-3 space-y-3 min-w-0">
                 {/* How to Use */}
                 <div className="border-b-4 border-current pb-3">
                   <h3 className="font-bold uppercase tracking-wider text-xs mb-2">
@@ -1199,7 +1193,7 @@ export default function AddTextToPDF() {
           )}
 
           {/* Canvas Area */}
-          <div className="flex-1 overflow-auto p-4 flex items-start justify-center">
+          <div className="flex-1 overflow-auto p-2 md:p-4 flex items-start justify-center">
             {editorMode !== 'edit' && file && (
               <div className="w-full max-w-4xl mx-auto">
                 {/* Tool Mode Header */}
