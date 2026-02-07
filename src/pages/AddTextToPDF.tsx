@@ -125,6 +125,7 @@ export default function AddTextToPDF() {
   const pageRef = useRef<HTMLDivElement>(null);
   const editingRef = useRef<HTMLTextAreaElement>(null);
   const fontDropdownRef = useRef<HTMLDivElement>(null);
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
   const isUndoingRef = useRef(false);
   const hasRestoredSession = useRef(false);
   const isRestoringSession = useRef(false);
@@ -135,6 +136,14 @@ export default function AddTextToPDF() {
   const currentPageInfo = pageInfos[currentPage] || { width: 595.276, height: 841.890, offsetX: 0, offsetY: 0, rotation: 0, effectiveWidth: 595.276, effectiveHeight: 841.890 };
   // Use effective dimensions (rotation-aware) for display since pdf.js renders with rotation applied
   const currentDims = { width: currentPageInfo.effectiveWidth, height: currentPageInfo.effectiveHeight };
+
+  // Track if we're on mobile for responsive adjustments
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   // The effective scale for display
   // At 100% zoom, we want the page to display at a reasonable size
@@ -355,6 +364,7 @@ export default function AddTextToPDF() {
     setIsLoading(true);
     setHistory([[]]);
     setHistoryIndex(0);
+    hasAutoFitted.current = false;
 
     try {
       // Get page info from pdf-lib (what we'll use for saving)
@@ -733,6 +743,7 @@ export default function AddTextToPDF() {
     setHistory([[]]);
     setHistoryIndex(0);
     setEditorMode('edit');
+    hasAutoFitted.current = false;
     clearSession();
   };
 
@@ -781,6 +792,52 @@ export default function AddTextToPDF() {
   const resetZoom = () => {
     setZoom(100);
   };
+
+  // Calculate zoom that fits the PDF width within the container
+  const calculateFitZoom = useCallback(() => {
+    const container = canvasContainerRef.current;
+    if (!container || !currentDims.width) return null;
+    const mobile = window.innerWidth < 768;
+    const padding = mobile ? 8 : 32; // p-1 vs p-4
+    const border = mobile ? 4 : 8; // border-2 vs border-4
+    const shadow = mobile ? 0 : 6; // no shadow on mobile
+    const availableWidth = container.clientWidth - padding * 2 - border - shadow;
+    const fitZoom = Math.floor((availableWidth / currentDims.width) * 100);
+    return Math.max(25, Math.min(fitZoom, 200));
+  }, [currentDims.width]);
+
+  // Auto-fit zoom on initial load (not session restore) and window resize
+  const hasAutoFitted = useRef(false);
+  useEffect(() => {
+    if (!file || pages.length === 0 || isLoading) return;
+    if (hasAutoFitted.current) return;
+    // Skip auto-fit during session restore (session has its own saved zoom)
+    if (isRestoringSession.current) return;
+
+    // Wait for DOM to paint so canvasContainerRef has its final dimensions
+    requestAnimationFrame(() => {
+      const fitZoom = calculateFitZoom();
+      if (fitZoom !== null) {
+        hasAutoFitted.current = true;
+        setZoom(fitZoom);
+      }
+    });
+  }, [file, pages.length, isLoading, calculateFitZoom]);
+
+  useEffect(() => {
+    const container = canvasContainerRef.current;
+    if (!container || !file || pages.length === 0) return;
+
+    const observer = new ResizeObserver(() => {
+      const fitZoom = calculateFitZoom();
+      if (fitZoom !== null) {
+        setZoom(fitZoom);
+      }
+    });
+
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [file, pages.length, calculateFitZoom]);
 
   const copyAnnotation = useCallback(() => {
     if (!selectedId) return;
@@ -1067,8 +1124,8 @@ export default function AddTextToPDF() {
       </div>
 
       {/* Editor Header Bar — Row 2: PDF Tools */}
-      <div className="h-9 bg-gray-900 text-white flex items-center px-1.5 md:px-2 gap-1 flex-shrink-0 border-t border-white/10">
-        <div className="flex border-2 border-white/20 overflow-x-auto">
+      <div className="h-9 bg-gray-900 text-white flex items-center px-1.5 md:px-2 gap-1 flex-shrink-0 border-t border-white/10 overflow-x-auto">
+        <div className="flex border-2 border-white/20 flex-shrink-0">
           {([
             { mode: 'rotate' as EditorMode, icon: RotateCw, label: 'ROTATE' },
             { mode: 'delete' as EditorMode, icon: Trash2, label: 'DELETE' },
@@ -1080,7 +1137,7 @@ export default function AddTextToPDF() {
             <button
               key={mode}
               onClick={() => setEditorMode(editorMode === mode ? 'edit' : mode)}
-              className={`px-2 py-1 flex items-center gap-1.5 font-bold text-[10px] tracking-wider transition-colors whitespace-nowrap ${
+              className={`px-1.5 md:px-2 py-1 flex items-center gap-1 md:gap-1.5 font-bold text-[10px] tracking-wider transition-colors whitespace-nowrap ${
                 i > 0 ? 'border-l-2 border-white/20' : ''
               } ${
                 editorMode === mode
@@ -1090,7 +1147,7 @@ export default function AddTextToPDF() {
               title={label}
             >
               <Icon className="w-3 h-3" />
-              {label}
+              <span className="hidden sm:inline">{label}</span>
             </button>
           ))}
         </div>
@@ -1098,7 +1155,7 @@ export default function AddTextToPDF() {
         <div className="flex-1" />
 
         {/* File name — right side */}
-        <div className="hidden sm:flex items-center gap-1.5 opacity-50">
+        <div className="hidden sm:flex items-center gap-1.5 opacity-50 flex-shrink-0">
           <FileText className="w-3 h-3" />
           <span className="font-mono text-[10px] max-w-[150px] truncate">{fileName}</span>
         </div>
@@ -1193,12 +1250,12 @@ export default function AddTextToPDF() {
           )}
 
           {/* Canvas Area */}
-          <div className="flex-1 overflow-auto p-2 md:p-4 flex items-start justify-center">
+          <div ref={canvasContainerRef} className="flex-1 overflow-auto p-1 md:p-4 flex items-start justify-center">
             {editorMode !== 'edit' && file && (
               <div className="w-full max-w-4xl mx-auto">
                 {/* Tool Mode Header */}
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="font-bold uppercase tracking-wider text-sm">
+                <div className="flex items-center justify-between mb-2 md:mb-4">
+                  <h2 className="font-bold uppercase tracking-wider text-xs md:text-sm">
                     {editorMode === 'rotate' && 'ROTATE PAGES'}
                     {editorMode === 'delete' && 'DELETE PAGES'}
                     {editorMode === 'reorder' && 'REORDER PAGES'}
@@ -1216,7 +1273,7 @@ export default function AddTextToPDF() {
                 </div>
 
                 {/* Tool Panel Content */}
-                <div className="bg-white border-4 border-black p-6 shadow-[6px_6px_0_0_#000]">
+                <div className="bg-white border-2 md:border-4 border-black p-3 md:p-6 shadow-none md:shadow-[6px_6px_0_0_#000]">
                   {editorMode === 'rotate' && (
                     <RotatePanel file={file} thumbnails={thumbnails} onFileUpdate={handleFileUpdate} />
                   )}
@@ -1241,9 +1298,16 @@ export default function AddTextToPDF() {
 
             {editorMode === 'edit' && (
             <div
+              style={{
+                width: currentDims.width * effectiveScale + (isMobile ? 4 : 8),
+                height: currentDims.height * effectiveScale + (isMobile ? 4 : 8),
+                flexShrink: 0,
+              }}
+            >
+            <div
               ref={pageRef}
               onClick={handlePageClick}
-              className={`relative bg-white border-4 border-black shadow-[6px_6px_0_0_#000] select-none origin-top-left ${
+              className={`relative bg-white border-2 md:border-4 border-black shadow-none md:shadow-[6px_6px_0_0_#000] select-none ${
                 activeTool === 'text' ? 'cursor-crosshair' : 'cursor-default'
               }`}
               style={{
@@ -1477,6 +1541,7 @@ export default function AddTextToPDF() {
                   </div>
                 </div>
               )}
+            </div>
             </div>
             )}
           </div>
